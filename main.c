@@ -52,6 +52,33 @@ extern "C" {
 #define LONG_MIN (-2147483647L - 1)
 #define LONG_MAX 2147483647L
 
+#define RC_WIDTH(rc)  ((rc).right - (rc).left)
+#define RC_HEIGHT(rc) ((rc).bottom - (rc).top)
+
+#undef THIS_
+#undef THIS
+#define THIS_ INTERFACE *This,
+#define THIS  INTERFACE *This
+
+#undef DECLARE_INTERFACE
+#define DECLARE_INTERFACE(iface)            \
+	typedef struct iface iface;             \
+	typedef struct iface##Vtbl iface##Vtbl; \
+	struct iface {                          \
+		struct iface##Vtbl const *lpVtbl;   \
+	};                                      \
+	struct iface##Vtbl
+
+#undef STDMETHOD
+#undef STDMETHOD_
+#undef STDMETHODV
+#undef STDMETHODV_
+#define STDMETHOD(method)       HRESULT (STDMETHODCALLTYPE * method)
+#define STDMETHOD_(type,method) type (STDMETHODCALLTYPE * method)
+#define STDMETHODV(method)       HRESULT (STDMETHODVCALLTYPE * method)
+#define STDMETHODV_(type,method) type (STDMETHODVCALLTYPE * method)
+
+
 /************************************************************************/
 /* Error handling and logging                                           */
 /************************************************************************/
@@ -96,7 +123,7 @@ static void Wtg_LogErrorPtr(char const *caller, int line,
 static void Wtg_LogErrorGetLastError(char const *caller, int line,
                                      char const *function) {
 	fprintf(stderr, "[error] In '%s:%d': Function '%s' returned error: %lu\n",
-	        caller, line, function, GetLastError());
+	        caller, line, function, (unsigned long)GetLastError());
 }
 #define LOGERROR(...) \
 	Wtg_LogError(__func__, __LINE__, __VA_ARGS__)
@@ -119,7 +146,7 @@ static void Wtg_WarnMissingShLibFunction(HMODULE hModule, LPCSTR lpProcName) {
 	if (!GetModuleFileNameA(hModule, modName, sizeof(modName)))
 		strcpy(modName, "?");
 	fprintf(stderr, "[warn] Shlib '%s': function '%s' not found (%lu)\n",
-	        lpProcName, modName, dwError);
+	        lpProcName, modName, (unsigned long)dwError);
 }
 /************************************************************************/
 
@@ -154,12 +181,17 @@ static HINSTANCE hApplicationInstance;
 	static LP##name pdyn_##name = NULL
 
 /* Ole32 API. */
+#undef CO_MTA_USAGE_COOKIE
+#define CO_MTA_USAGE_COOKIE real_CO_MTA_USAGE_COOKIE
+DECLARE_HANDLE(CO_MTA_USAGE_COOKIE);
 DEFINE_DYNAMIC_FUNCTION(HRESULT, STDAPICALLTYPE, CoInitialize, (LPVOID pvReserved));
 DEFINE_DYNAMIC_FUNCTION(HRESULT, STDAPICALLTYPE, CoCreateInstance, (REFCLSID rclsid, LPUNKNOWN pUnkOuter, DWORD dwClsContext, REFIID riid, LPVOID *ppv));
 DEFINE_DYNAMIC_FUNCTION(void, STDAPICALLTYPE, CoUninitialize, (void));
-#define CoInitialize     (*pdyn_CoInitialize)
-#define CoCreateInstance (*pdyn_CoCreateInstance)
-#define CoUninitialize   (*pdyn_CoUninitialize)
+DEFINE_DYNAMIC_FUNCTION(HRESULT, STDAPICALLTYPE, CoIncrementMTAUsage, (CO_MTA_USAGE_COOKIE * pCookie));
+#define CoInitialize        (*pdyn_CoInitialize)
+#define CoCreateInstance    (*pdyn_CoCreateInstance)
+#define CoUninitialize      (*pdyn_CoUninitialize)
+#define CoIncrementMTAUsage (*pdyn_CoIncrementMTAUsage)
 
 
 /* User32 API. */
@@ -245,6 +277,7 @@ static bool DynApi_InitializeOld32(void) {
 	DynApi_LoadFunction(hOle32, CoInitialize);
 	DynApi_LoadFunction(hOle32, CoCreateInstance);
 	DynApi_LoadFunction(hOle32, CoUninitialize);
+	DynApi_TryLoadFunction(hOle32, CoIncrementMTAUsage);
 	return true;
 fail:
 	return false;
@@ -515,6 +548,499 @@ static void Sys_SetVolume(float value) {
 	last_system_volume = value;
 }
 
+
+/* RADIO Access (Bluetooth / Wifi) */
+typedef DWORD RADIOACCESSSTATUS;
+#define RADIOACCESSSTATUS_UNSPECIFIED      0
+#define RADIOACCESSSTATUS_ALLOWED          1
+#define RADIOACCESSSTATUS_DENIED_BY_USER   2
+#define RADIOACCESSSTATUS_DENIED_BY_SYSTEM 3
+typedef DWORD RADIOKIND;
+#define RADIOKIND_OTHER            0
+#define RADIOKIND_WIFI             1
+#define RADIOKIND_MOBILE_BROADBAND 2
+#define RADIOKIND_BLUETOOTH        3
+#define RADIOKIND_FM               4
+typedef DWORD RADIOSTATE;
+#define RADIOSTATE_UNKNOWN  0
+#define RADIOSTATE_ON       1
+#define RADIOSTATE_OFF      2
+#define RADIOSTATE_DISABLED 3
+
+#undef IInspectable
+#undef IID_IUnknown
+#undef IID_IAgileObject
+#undef IID_IRadioStatics
+#undef HSTRING
+#undef HSTRING_HEADER
+#define IInspectable      real_IInspectable
+#define IID_IUnknown      real_IID_IUnknown
+#define IID_IAgileObject  real_IID_IAgileObject
+#define IID_IRadioStatics real_IID_IRadioStatics
+#define HSTRING           real_HSTRING
+#define HSTRING_HEADER    real_HSTRING_HEADER
+
+DECLARE_HANDLE(HSTRING);
+
+typedef struct {
+	union {
+		PVOID Reserved1;
+#ifdef _WIN64
+		char Reserved2[24];
+#else /* _WIN64 */
+		char Reserved2[20];
+#endif /* !_WIN64 */
+	} Reserved;
+} HSTRING_HEADER;
+
+static GUID const IID_IUnknown                                         = { 0x00000000, 0x0000, 0x0000, { 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46 } };
+static GUID const IID_IAgileObject                                     = { 0x94ea2b94, 0xe9cc, 0x49e0, { 0xc0, 0xff, 0xee, 0x64, 0xca, 0x8f, 0x5b, 0x90 } };
+static GUID const IID_IRadioStatics                                    = { 0x5fb6a12e, 0x67cb, 0x46ae, { 0xaa, 0xe9, 0x65, 0x91, 0x9f, 0x86, 0xef, 0xf4 } };
+static GUID const IID_AsyncOperationCompletedHandler_IVectorView_Radio = { 0xd30691e6, 0x60a0, 0x59c9, { 0x89, 0x65, 0x5b, 0xbe, 0x28, 0x2e, 0x82, 0x08 } };
+static GUID const IID_AsyncOperationCompletedHandler_RadioAccessStatus = { 0xbd248e73, 0xf05f, 0x574c, { 0xae, 0x3d, 0x9b, 0x95, 0xc4, 0xbf, 0x28, 0x2a } };
+
+/* From "api-ms-win-core-winrt-string-l1-1-0.dll": */
+DEFINE_DYNAMIC_FUNCTION(HRESULT, STDAPICALLTYPE, WindowsCreateStringReference, (PCWSTR sourceString, UINT32 length, HSTRING_HEADER *hstringHeader, HSTRING *string));
+DEFINE_DYNAMIC_FUNCTION(HRESULT, STDAPICALLTYPE, WindowsDeleteString, (HSTRING string));
+#define WindowsDeleteString          (*pdyn_WindowsDeleteString)
+#define WindowsCreateStringReference (*pdyn_WindowsCreateStringReference)
+
+/* From "api-ms-win-core-winrt-l1-1-0.dll": */
+DEFINE_DYNAMIC_FUNCTION(HRESULT, WINAPI, RoGetActivationFactory, (HSTRING activatableClassId, GUID const *iid, void** factory));
+#define RoGetActivationFactory (*pdyn_RoGetActivationFactory)
+
+static HMODULE hModule_api_ms_win_core_winrt_string_l1_1_0; /* "api-ms-win-core-winrt-string-l1-1-0.dll" */
+static HMODULE hModule_api_ms_win_core_winrt_l1_1_0;        /* "api-ms-win-core-winrt-l1-1-0.dll" */
+
+static void SysIntern_FreeMsWinCoreWinRtAPIS(void) {
+#define X_FreeLibrary(x) ((x) && (FreeLibrary(x), (x) = NULL, 1))
+	X_FreeLibrary(hModule_api_ms_win_core_winrt_string_l1_1_0);
+	X_FreeLibrary(hModule_api_ms_win_core_winrt_l1_1_0);
+#undef X_FreeLibrary
+}
+
+static bool SysIntern_LoadMsWinCoreWinRtAPIS(void) {
+	hModule_api_ms_win_core_winrt_string_l1_1_0 = LoadLibraryW(L"api-ms-win-core-winrt-string-l1-1-0.dll");
+	if (!hModule_api_ms_win_core_winrt_string_l1_1_0) {
+		LOGERROR_GLE("LoadLibraryW(L\"api-ms-win-core-winrt-string-l1-1-0.dll\")");
+		goto fail;
+	}
+	hModule_api_ms_win_core_winrt_l1_1_0 = LoadLibraryW(L"api-ms-win-core-winrt-l1-1-0.dll");
+	if (!hModule_api_ms_win_core_winrt_l1_1_0) {
+		LOGERROR_GLE("LoadLibraryW(L\"api-ms-win-core-winrt-l1-1-0.dll\")");
+		goto fail;
+	}
+	DynApi_LoadFunction(hModule_api_ms_win_core_winrt_string_l1_1_0, WindowsDeleteString);
+	DynApi_LoadFunction(hModule_api_ms_win_core_winrt_string_l1_1_0, WindowsCreateStringReference);
+	DynApi_LoadFunction(hModule_api_ms_win_core_winrt_l1_1_0, RoGetActivationFactory);
+	return true;
+fail:
+	SysIntern_FreeMsWinCoreWinRtAPIS();
+	return false;
+}
+
+#undef INTERFACE
+#define INTERFACE IInspectable
+DECLARE_INTERFACE(IInspectable) {
+	/* IUnknown */
+	STDMETHOD(QueryInterface)(THIS_ GUID const *riid, LPVOID FAR * ppvObj);
+	STDMETHOD_(ULONG, AddRef)(THIS);
+	STDMETHOD_(ULONG, Release)(THIS);
+	/* IInspectable */
+	STDMETHOD(GetIids)(THIS_ DWORD *count, GUID **ids);
+	STDMETHOD(GetRuntimeClassName)(THIS_ void **name);
+	STDMETHOD(GetTrustLevel)(THIS_ /*Windows::Foundation::TrustLevel*/ int *level);
+};
+
+#undef INTERFACE
+#define INTERFACE IRadioStatics
+DECLARE_INTERFACE(IRadioStatics) {
+	/* IUnknown */
+	STDMETHOD(QueryInterface)(THIS_ GUID const *riid, LPVOID FAR * ppvObj);
+	STDMETHOD_(ULONG, AddRef)(THIS);
+	STDMETHOD_(ULONG, Release)(THIS);
+	/* IInspectable */
+	STDMETHOD(GetIids)(THIS_ DWORD *count, GUID **ids);
+	STDMETHOD(GetRuntimeClassName)(THIS_ void **name);
+	STDMETHOD(GetTrustLevel)(THIS_ /*Windows::Foundation::TrustLevel*/ int *level);
+	/* IRadioStatics */
+	STDMETHOD(GetRadiosAsync)(THIS_ void **value);
+	STDMETHOD(GetDeviceSelector)(THIS_ void **deviceSelector);
+	STDMETHOD(FromIdAsync)(THIS_ void *deviceId, void **value);
+	STDMETHOD(RequestAccessAsync)(THIS_ void **value);
+};
+
+#undef INTERFACE
+#define INTERFACE IAsyncOperation
+DECLARE_INTERFACE(IAsyncOperation) {
+	/* IUnknown */
+	STDMETHOD(QueryInterface)(THIS_ GUID const *riid, LPVOID FAR * ppvObj);
+	STDMETHOD_(ULONG, AddRef)(THIS);
+	STDMETHOD_(ULONG, Release)(THIS);
+	/* IInspectable */
+	STDMETHOD(GetIids)(THIS_ DWORD *count, GUID **ids);
+	STDMETHOD(GetRuntimeClassName)(THIS_ void **name);
+	STDMETHOD(GetTrustLevel)(THIS_ /*Windows::Foundation::TrustLevel*/ int *level);
+	/* IAsyncOperation */
+	STDMETHOD(put_Completed)(THIS_ void *handler);
+	STDMETHOD(get_Completed)(THIS_ void **handler);
+	STDMETHOD(GetResults)(THIS_ void **results);
+};
+
+#undef INTERFACE
+#define INTERFACE IAsyncCompletionHandler
+DECLARE_INTERFACE(IAsyncCompletionHandler) {
+	/* IUnknown */
+	STDMETHOD(QueryInterface)(THIS_ GUID const *riid, LPVOID FAR * ppvObj);
+	STDMETHOD_(ULONG, AddRef)(THIS);
+	STDMETHOD_(ULONG, Release)(THIS);
+	/* IAsyncCompletionHandler */
+	STDMETHOD(Invoke)(THIS_ void *asyncInfo, /*winrt::Windows::Foundation::AsyncStatus*/ int status);
+};
+
+#undef INTERFACE
+#define INTERFACE IVectorView
+DECLARE_INTERFACE(IVectorView) {
+	/* IUnknown */
+	STDMETHOD(QueryInterface)(THIS_ GUID const *riid, LPVOID FAR * ppvObj);
+	STDMETHOD_(ULONG, AddRef)(THIS);
+	STDMETHOD_(ULONG, Release)(THIS);
+	/* IInspectable */
+	STDMETHOD(GetIids)(THIS_ DWORD *count, GUID **ids);
+	STDMETHOD(GetRuntimeClassName)(THIS_ void **name);
+	STDMETHOD(GetTrustLevel)(THIS_ /*Windows::Foundation::TrustLevel*/ int *level);
+	/* IVectorView */
+	STDMETHOD(GetAt)(THIS_ DWORD index, void **item);
+	STDMETHOD(get_Size)(THIS_ DWORD * size);
+	STDMETHOD(IndexOf)(THIS_ void *value, DWORD *index, bool *found);
+	STDMETHOD(GetMany)(THIS_ DWORD startIndex, DWORD capacity, void **value, DWORD *actual);
+};
+
+#undef INTERFACE
+#define INTERFACE IRadio
+DECLARE_INTERFACE(IRadio) {
+	/* IUnknown */
+	STDMETHOD(QueryInterface)(THIS_ GUID const *riid, LPVOID FAR * ppvObj);
+	STDMETHOD_(ULONG, AddRef)(THIS);
+	STDMETHOD_(ULONG, Release)(THIS);
+	/* IInspectable */
+	STDMETHOD(GetIids)(THIS_ DWORD *count, GUID **ids);
+	STDMETHOD(GetRuntimeClassName)(THIS_ void **name);
+	STDMETHOD(GetTrustLevel)(THIS_ /*Windows::Foundation::TrustLevel*/ int *level);
+	/* IRadio */
+	STDMETHOD(SetStateAsync)(THIS_ RADIOSTATE value, void **retval);
+	STDMETHOD(add_StateChanged)(THIS_ void *handler, INT64 *eventCookie);
+	STDMETHOD(remove_StateChanged)(THIS_ INT64 eventCookie);
+	STDMETHOD(get_State)(THIS_ RADIOSTATE *value);
+	STDMETHOD(get_Name)(THIS_ void **value);
+	STDMETHOD(get_Kind)(THIS_ RADIOKIND *value);
+};
+
+static IRadioStatics *SysIntern_GetRadioStaticsActivationFactory(void) {
+	IRadioStatics *result = NULL;
+	HSTRING_HEADER hsHdr;
+	HSTRING hstr;
+	HRESULT hr;
+	hr = pdyn_WindowsCreateStringReference(L"Windows.Devices.Radios.Radio",
+	                                       28, &hsHdr, &hstr);
+	if (FAILED(hr)) {
+		LOGERROR_PTR("WindowsCreateStringReference()", hr);
+		goto done;
+	}
+	hr = pdyn_RoGetActivationFactory(hstr, &IID_IRadioStatics, (void **)&result);
+	if (hr == CO_E_NOTINITIALIZED) {
+		if (!pdyn_CoIncrementMTAUsage)
+			DynApi_InitializeOld32();
+		if (pdyn_CoIncrementMTAUsage) {
+			CO_MTA_USAGE_COOKIE cookie;
+			CoIncrementMTAUsage(&cookie);
+			hr = pdyn_RoGetActivationFactory(hstr, &IID_IRadioStatics, (void **)&result);
+		}
+	}
+	pdyn_WindowsDeleteString(hstr);
+	if (FAILED(hr) || !result) {
+		LOGERROR_PTR("RoGetActivationFactory()", hr);
+		result = NULL;
+	}
+done:
+	return result;
+}
+
+typedef struct {
+	struct IAsyncCompletionHandlerVtbl const *lpVtbl;          /* [1..1] V-table. */
+	LONG                                      achc_refcnt;     /* Reference counter */
+	GUID const                               *achc_intf_guid;  /* Interface GUID */
+	HANDLE                                    achc_hsem;       /* Semaphore */
+} SysIntern_IAsyncCompletionHandlerCallback;
+
+static ULONG STDMETHODCALLTYPE
+SysIntern_IAsyncCompletionHandlerCallback_AddRef(IAsyncCompletionHandler *self) {
+	SysIntern_IAsyncCompletionHandlerCallback *me;
+	me = (SysIntern_IAsyncCompletionHandlerCallback *)self;
+	return InterlockedIncrement(&me->achc_refcnt);
+}
+
+static ULONG STDMETHODCALLTYPE
+SysIntern_IAsyncCompletionHandlerCallback_Release(IAsyncCompletionHandler *self) {
+	ULONG ulResult;
+	SysIntern_IAsyncCompletionHandlerCallback *me;
+	me = (SysIntern_IAsyncCompletionHandlerCallback *)self;
+	ulResult = InterlockedDecrement(&me->achc_refcnt);
+	if (ulResult == 0) {
+		CloseHandle(me->achc_hsem);
+		free(me);
+	}
+	return ulResult;
+}
+
+static HRESULT STDMETHODCALLTYPE
+SysIntern_IAsyncCompletionHandlerCallback_QueryInterface(IAsyncCompletionHandler *self,
+                                                         GUID const *riid, LPVOID *ppvObj) {
+	SysIntern_IAsyncCompletionHandlerCallback *me;
+	me = (SysIntern_IAsyncCompletionHandlerCallback *)self;
+	if (memcmp(riid, me->achc_intf_guid, sizeof(GUID)) == 0 ||
+	    memcmp(riid, &IID_IUnknown, sizeof(GUID)) == 0 ||
+	    memcmp(riid, &IID_IAgileObject, sizeof(GUID)) == 0) {
+		*ppvObj = me;
+		SysIntern_IAsyncCompletionHandlerCallback_AddRef(self);
+		return S_OK;
+	}
+	*ppvObj = NULL;
+	return E_NOINTERFACE;
+}
+
+static HRESULT STDMETHODCALLTYPE
+SysIntern_IAsyncCompletionHandlerCallback_Invoke(IAsyncCompletionHandler *self,
+                                                 void *asyncInfo, int status) {
+	SysIntern_IAsyncCompletionHandlerCallback *me;
+	(void)asyncInfo;
+	(void)status;
+	me = (SysIntern_IAsyncCompletionHandlerCallback *)self;
+	ReleaseSemaphore(me->achc_hsem, 1, NULL);
+	return S_OK;
+}
+
+static struct IAsyncCompletionHandlerVtbl const SysIntern_IAsyncCompletionHandlerCallback_VT = {
+	&SysIntern_IAsyncCompletionHandlerCallback_QueryInterface,
+	&SysIntern_IAsyncCompletionHandlerCallback_AddRef,
+	&SysIntern_IAsyncCompletionHandlerCallback_Release,
+	&SysIntern_IAsyncCompletionHandlerCallback_Invoke,
+};
+
+static HRESULT
+SysIntern_WaitForIAsyncOperation(IAsyncOperation *__restrict iaop,
+                                 GUID const *__restrict intf_guid) {
+	DWORD dwError;
+	HRESULT hr;
+	SysIntern_IAsyncCompletionHandlerCallback *cb;
+	cb = (SysIntern_IAsyncCompletionHandlerCallback *)malloc(
+	/* */ sizeof(SysIntern_IAsyncCompletionHandlerCallback));
+	if (!cb) {
+		LOGERROR("malloc(SysIntern_IAsyncCompletionHandlerCallback) failed\n");
+		return E_OUTOFMEMORY;
+	}
+	cb->achc_hsem = CreateSemaphoreW(NULL, 0, 1, NULL);
+	if (!cb->achc_hsem) {
+		LOGERROR_GLE("CreateSemaphoreW()");
+		hr = E_OUTOFMEMORY;
+		goto err_cb;
+	}
+	cb->achc_intf_guid = intf_guid;
+	cb->achc_refcnt    = 1;
+	cb->lpVtbl         = &SysIntern_IAsyncCompletionHandlerCallback_VT;
+	/* Register the completion callback. */
+	hr = iaop->lpVtbl->put_Completed(iaop, cb);
+	if (FAILED(hr)) {
+		LOGERROR_PTR("IAsyncOperation::put_Completed()", hr);
+		goto err_cb2;
+	}
+	/* Wait for the completion callback to be invoked. */
+	dwError = WaitForSingleObject(cb->achc_hsem, INFINITE);
+	if (dwError == WAIT_FAILED) {
+		LOGERROR_GLE("WaitForSingleObject()");
+		hr = E_UNEXPECTED;
+	}
+	cb->lpVtbl->Release((IAsyncCompletionHandler *)cb);
+	return hr;
+err_cb2:
+	CloseHandle(cb->achc_hsem);
+err_cb:
+	free(cb);
+	return hr;
+}
+
+static IVectorView *SysIntern_GetRadioList(void) {
+	IVectorView *result = NULL;
+	IRadioStatics *iRst;
+	IAsyncOperation *iAsyncList = NULL;
+	HRESULT hr;
+	iRst = SysIntern_GetRadioStaticsActivationFactory();
+	if (!iRst)
+		goto done;
+//TODO:	hr = object->lpVtbl->RequestAccessAsync(object, (void **)&list);
+	hr = iRst->lpVtbl->GetRadiosAsync(iRst, (void **)&iAsyncList);
+	iRst->lpVtbl->Release(iRst);;
+	if (FAILED(hr) || !iAsyncList) {
+		LOGERROR_PTR("IRadioStatics::GetRadiosAsync()", hr);
+		goto done;
+	}
+	hr = SysIntern_WaitForIAsyncOperation(iAsyncList, &IID_AsyncOperationCompletedHandler_IVectorView_Radio);
+	if (FAILED(hr))
+		goto done;
+	hr = iAsyncList->lpVtbl->GetResults(iAsyncList, (void **)&result);
+	iAsyncList->lpVtbl->Release(iAsyncList);
+	if (FAILED(hr) || !result) {
+		LOGERROR_PTR("IAsyncOperation::GetResults()", hr);
+		result = NULL;
+	}
+done:
+	return result;
+}
+
+/* High-level does-everything functions */
+static RADIOSTATE SysIntern_GetRadioState(RADIOKIND rkKind) {
+	DWORD i, dwSize = 0;
+	IVectorView *rdList;
+	HRESULT hr;
+	RADIOSTATE result = RADIOSTATE_UNKNOWN;
+	if (!SysIntern_LoadMsWinCoreWinRtAPIS())
+		goto done;
+	rdList = SysIntern_GetRadioList();
+	if (!rdList)
+		goto done;
+	hr = rdList->lpVtbl->get_Size(rdList, &dwSize);
+	if (FAILED(hr)) {
+		LOGERROR_PTR("IVectorView::get_Size()", hr);
+		goto done;
+	}
+	for (i = 0; i < dwSize; ++i) {
+		IRadio *rdo = NULL;
+		RADIOKIND rdoKind;
+		hr = rdList->lpVtbl->GetAt(rdList, i, (void **)&rdo);
+		if (FAILED(hr) || !rdo) {
+			LOGERROR_PTR("IVectorView::GetAt()", hr);
+			continue;
+		}
+		rdoKind = RADIOKIND_OTHER;
+		hr = rdo->lpVtbl->get_Kind(rdo, &rdoKind);
+		if (FAILED(hr)) {
+			LOGERROR_PTR("IRadio::get_Kind()", hr);
+			rdoKind = RADIOKIND_OTHER;
+		}
+		if (rdoKind == rkKind) {
+			hr = rdo->lpVtbl->get_State(rdo, &result);
+			if (FAILED(hr)) {
+				LOGERROR_PTR("IRadio::get_State()", hr);
+				result = RADIOSTATE_UNKNOWN;
+			}
+		}
+		rdo->lpVtbl->Release(rdo);
+		if (rdoKind == rkKind)
+			break;
+	}
+	rdList->lpVtbl->Release(rdList);
+done:
+	SysIntern_FreeMsWinCoreWinRtAPIS();
+	return result;
+}
+
+static void SysIntern_SetRadioState(RADIOKIND rkKind, RADIOSTATE rsState) {
+	DWORD i, dwSize = 0;
+	IVectorView *rdList;
+	HRESULT hr;
+	if (!SysIntern_LoadMsWinCoreWinRtAPIS())
+		goto done;
+	rdList = SysIntern_GetRadioList();
+	if (!rdList)
+		goto done;
+	hr = rdList->lpVtbl->get_Size(rdList, &dwSize);
+	if (FAILED(hr)) {
+		LOGERROR_PTR("IVectorView::get_Size()", hr);
+		goto done;
+	}
+	for (i = 0; i < dwSize; ++i) {
+		IRadio *rdo = NULL;
+		RADIOKIND rdoKind;
+		hr = rdList->lpVtbl->GetAt(rdList, i, (void **)&rdo);
+		if (FAILED(hr) || !rdo) {
+			LOGERROR_PTR("IVectorView::GetAt()", hr);
+			continue;
+		}
+		rdoKind = RADIOKIND_OTHER;
+		hr = rdo->lpVtbl->get_Kind(rdo, &rdoKind);
+		if (FAILED(hr)) {
+			LOGERROR_PTR("IRadio::get_Kind()", hr);
+			rdoKind = RADIOKIND_OTHER;
+		}
+		if (rdoKind == rkKind) {
+			IAsyncOperation *ssAsync = NULL;
+			hr = rdo->lpVtbl->SetStateAsync(rdo, rsState, (void **)&ssAsync);
+			if (FAILED(hr) || !ssAsync) {
+				LOGERROR_PTR("IRadio::SetStateAsync()", hr);
+			} else {
+				hr = SysIntern_WaitForIAsyncOperation(ssAsync, &IID_AsyncOperationCompletedHandler_RadioAccessStatus);
+				if (!FAILED(hr)) {
+					RADIOACCESSSTATUS acc = RADIOACCESSSTATUS_UNSPECIFIED;
+					/* Check operation status and log an error if it failed. */
+					hr = ssAsync->lpVtbl->GetResults(ssAsync, (void **)&acc);
+					if (FAILED(hr)) {
+						LOGERROR_PTR("IRadio::SetStateAsync()::GetResults()", hr);
+					} else if (acc != RADIOACCESSSTATUS_ALLOWED) {
+						LOGERROR("IRadio::SetStateAsync() returned access error %u\n", acc);
+						if (acc == RADIOACCESSSTATUS_DENIED_BY_USER) {
+							static bool didnotice = false;
+							if (!didnotice) {
+								printf("[notice] Wintouchg isn't allowed to control radio devices\n");
+								printf("[notice] You must enable app access to radio devices in SystemSettings/Privacy\n");
+								didnotice = true;
+							}
+						}
+					}
+				}
+				ssAsync->lpVtbl->Release(ssAsync);
+			}
+		}
+		rdo->lpVtbl->Release(rdo);
+		if (rdoKind == rkKind)
+			break;
+	}
+	rdList->lpVtbl->Release(rdList);
+done:
+	SysIntern_FreeMsWinCoreWinRtAPIS();
+}
+
+static int last_system_bluetooth = -1;
+static int last_system_wifi      = -1;
+
+/* High-level System radio getter/setter */
+static bool Sys_GetBluetoothEnabled(void) {
+	if (last_system_bluetooth < 0)
+		last_system_bluetooth = SysIntern_GetRadioState(RADIOKIND_BLUETOOTH) == RADIOSTATE_ON;
+	return last_system_bluetooth > 0;
+}
+static void Sys_SetBluetoothEnabled(bool enabled) {
+	if (last_system_bluetooth == enabled)
+		return;
+	SysIntern_SetRadioState(RADIOKIND_BLUETOOTH,
+	                        enabled ? RADIOSTATE_ON
+	                                : RADIOSTATE_OFF);
+	last_system_bluetooth = enabled;
+}
+static bool Sys_GetWifiEnabled(void) {
+	if (last_system_wifi < 0)
+		last_system_wifi = SysIntern_GetRadioState(RADIOKIND_WIFI) == RADIOSTATE_ON;
+	return last_system_wifi > 0;
+}
+static void Sys_SetWifiEnabled(bool enabled) {
+	if (last_system_wifi == enabled)
+		return;
+	SysIntern_SetRadioState(RADIOKIND_WIFI,
+	                        enabled ? RADIOSTATE_ON
+	                                : RADIOSTATE_OFF);
+	last_system_wifi = enabled;
+}
+
+
 /* TODO: CP_ELEM_TGL_ROTLOCK: Rotation lock
  *  - HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\AutoRotation\Enable
  *  - [DllImport("user32.dll", EntryPoint = "#2507")]
@@ -525,15 +1051,6 @@ static void Sys_SetVolume(float value) {
  *  - HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\Cache\DefaultAccount\$$windows.data.bluelightreduction.bluelightreductionstate\Current
  * Source: Own reverse engineering */
 
-/* TODO: Bluetooth and Wifi can be controlled using this:
- * https://superuser.com/questions/1168551/turn-on-off-bluetooth-radio-adapter-from-cmd-powershell-in-windows-10#
- * NOTE: This requires the user to enable the switch under
- *       "Settings/Privacy/RF (devices?)/..."
- *       "Einstellungen/Datenschutz/Funktechnik/..."
- */
-
-/* TODO: CP_ELEM_TGL_WIFI:       Wifi enable/disable */
-/* TODO: CP_ELEM_TGL_BLUETOOTH:  Bluetooth enable/disable */
 /* TODO: CP_ELEM_TGL_FLIGHTMODE: Flight mode enable/disable
  * Can be read using: HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Control\RadioManagement\SystemRadioState
  * Source: https://stackoverflow.com/questions/42273812/how-to-detect-airplane-mode-programmatically-in-laptop-with-windows-10-using-uwp
@@ -584,8 +1101,14 @@ static bool Sys_IsAltTabWindow(HWND hWnd) {
 		if (dwCloaked != 0)
 			return false;
 	}
+	hWndTry  = NULL;
 	hWndWalk = GetAncestor(hWnd, GA_ROOTOWNER);
-	while ((hWndTry = GetLastActivePopup(hWndWalk)) != hWndTry) {
+	for (;;) {
+		HWND hNext;
+		hNext = GetLastActivePopup(hWndWalk);
+		if (!hNext || hNext == hWndTry)
+			break;
+		hWndTry = hNext;
 		if (IsWindowVisible(hWndTry))
 			break;
 		hWndWalk = hWndTry;
@@ -670,8 +1193,7 @@ typedef struct {
 } WtgTouchInfoMeta;
 static POINTER_TOUCH_INFO touch_info[WTG_MAX_TOUCH_INPUTS];
 static WtgTouchInfoMeta touch_meta[WTG_MAX_TOUCH_INPUTS];
-static size_t touch_count  = 0;
-static UINT32 touch_nextid = 0;
+static size_t touch_count = 0;
 /* Set of touch IDs that have been canceled. */
 static UINT32 touch_canceled_ids[WTG_MAX_TOUCH_INPUTS];
 static size_t touch_canceled_cnt = 0;
@@ -1353,7 +1875,7 @@ static void WtgAppSwitcherApplet_Fini(WtgAppSwitcherApplet *__restrict self) {
 #define CP_ELEM_NONE           ((unsigned int)-1) /* No element */
 #define CP_ELEM_BRIGHTNESS     0 /* Brightness slider */
 #define CP_ELEM_VOLUME         1 /* Volume slider */
-#define CP_ELEM_BATTERY        2 /* Battery & Clock information */
+#define CP_ELEM_CLK_BATTERY    2 /* Battery & Clock information */
 #define CP_ELEM_BUTTONS_FIRST  CP_ELEM_TGL_WIFI /* First button */
 #define CP_ELEM_TGL_WIFI       3 /* TODO: Toggle wifi */
 #define CP_ELEM_TGL_BLUETOOTH  4 /* TODO: Toggle bluetooth */
@@ -1415,7 +1937,7 @@ WtgControlPanelApplet_FindTouch(WtgControlPanelApplet *__restrict self, UINT32 p
 	}
 	return result;
 }
-static void /* Delete the touch-point for `pointerId' */
+static bool /* Delete the touch-point for `pointerId' */
 WtgControlPanelApplet_DelTouch(WtgControlPanelApplet *__restrict self, UINT32 pointerId) {
 	size_t index = WtgControlPanelApplet_FindTouch(self, pointerId);
 	if (index < self->cp_tpcnt) {
@@ -1424,7 +1946,9 @@ WtgControlPanelApplet_DelTouch(WtgControlPanelApplet *__restrict self, UINT32 po
 		        &self->cp_tpvec[index + 1],
 		        (self->cp_tpcnt - index) *
 		        sizeof(*self->cp_tpvec));
+		return true;
 	}
+	return false;
 }
 static void /* Set the element touched by `pointerId' (one of `CP_ELEM_*') */
 WtgControlPanelApplet_SetTouch(WtgControlPanelApplet *__restrict self,
@@ -1491,13 +2015,15 @@ extern uint8_t const gui_cp_r[32][1][4];
 extern uint8_t const gui_cp_bl[32][32][4];
 extern uint8_t const gui_cp_b[1][32][4];
 extern uint8_t const gui_cp_br[32][32][4];
+extern uint8_t const gui_cp_wifi[64][64][4];
+extern uint8_t const gui_cp_bth[32][64][4];
 #define GUI_RGBA(r, g, b, a) /* XXX: Byteorder??? */ \
 	((UINT32)(b) | ((UINT32)(g) << 8) | ((UINT32)(r) << 16) | ((UINT32)(a) << 24))
 
 #define CP_BORDER 32 /* Width (in pixels) of the control panel border. */
 
-#define GUI_WIDTH(elem)  (sizeof(*(elem)) / 4)
-#define GUI_HEIGHT(elem) (sizeof(elem) / sizeof(*(elem)))
+#define GUI_WIDTH(elem)  (sizeof(elem) / sizeof(*(elem)))
+#define GUI_HEIGHT(elem) (sizeof(*(elem)) / sizeof(**(elem)))
 
 
 static void Wtg_PerPixelCopy(void *dst, void const *src,
@@ -1515,9 +2041,86 @@ static void Wtg_PerPixelCopy(void *dst, void const *src,
 static void Wtg_PerPixelBlit(UINT32 *image, size_t x, size_t y,
                              void const *src, size_t w, size_t h) {
 	Wtg_PerPixelCopy(image + x + (y * cp.cp_size.x),
-	              src, w, h, cp.cp_size.x, w);
+	                 src, w, h, cp.cp_size.x, w);
 }
 
+#if 0 /*< Define as 1 to have the blender round upwards. */
+#define div256(x) (((x) + 0xfe) / 0xff)
+#else
+#define div256(x) ((x) / 0xff)
+#endif
+
+static UINT32 Wtg_BlendPixels(UINT32 dst, UINT32 src) {
+	union bgra_pixel {
+		UINT32 pixel;
+		struct {
+			UINT8 b;
+			UINT8 g;
+			UINT8 r;
+			UINT8 a;
+		};
+	};
+	union bgra_pixel dst_pixel;
+	union bgra_pixel src_pixel;
+	union bgra_pixel lhs_pixel;
+	union bgra_pixel rhs_pixel;
+	union bgra_pixel res_pixel;
+	dst_pixel.pixel = dst;
+	src_pixel.pixel = src;
+
+	lhs_pixel.r = (UINT8)div256((uint32_t)src_pixel.r * src_pixel.a);
+	lhs_pixel.g = (UINT8)div256((uint32_t)src_pixel.g * src_pixel.a);
+	lhs_pixel.b = (UINT8)div256((uint32_t)src_pixel.b * src_pixel.a);
+	lhs_pixel.a = (UINT8)div256((uint32_t)src_pixel.a * src_pixel.a);
+
+	rhs_pixel.r = (UINT8)div256((uint32_t)dst_pixel.r * (0xff - src_pixel.a));
+	rhs_pixel.g = (UINT8)div256((uint32_t)dst_pixel.g * (0xff - src_pixel.a));
+	rhs_pixel.b = (UINT8)div256((uint32_t)dst_pixel.b * (0xff - src_pixel.a));
+	rhs_pixel.a = (UINT8)div256((uint32_t)dst_pixel.a * (0xff - src_pixel.a));
+
+	res_pixel.r = lhs_pixel.r + rhs_pixel.r;
+	res_pixel.g = lhs_pixel.g + rhs_pixel.g;
+	res_pixel.b = lhs_pixel.b + rhs_pixel.b;
+	res_pixel.a = lhs_pixel.a + rhs_pixel.a;
+
+	return res_pixel.pixel;
+}
+
+static void Wtg_PerPixelBlend(void *dst, void const *src,
+                              size_t w, size_t h,
+                              size_t dst_stride,
+                              size_t src_stride) {
+	size_t x;
+	while (h) {
+		for (x = 0; x < w; ++x) {
+			((UINT32 *)dst)[x] = Wtg_BlendPixels(((UINT32 const *)dst)[x],
+			                                     ((UINT32 const *)src)[x]);
+		}
+		dst = (BYTE *)dst + (dst_stride * 4);
+		src = (BYTE *)src + (src_stride * 4);
+		--h;
+	}
+}
+
+
+static bool WtgControlPanel_IsSliderVertical(unsigned int elem) {
+	LONG w, h;
+	w = cp.cp_elems[elem].right - cp.cp_elems[elem].left;
+	h = cp.cp_elems[elem].bottom - cp.cp_elems[elem].top;
+	return h > w;
+}
+
+static double
+WtgControlPanel_GetSliderPositionAt(unsigned int elem, LONG x, LONG y) {
+	double result;
+	if (WtgControlPanel_IsSliderVertical(elem)) {
+		LONG h = cp.cp_elems[elem].bottom - cp.cp_elems[elem].top;;
+		result = (double)(h - y) / (double)h;
+	} else {
+		result = (double)x / (double)(cp.cp_elems[elem].right - cp.cp_elems[elem].left);
+	}
+	return result;
+}
 
 static void /* @param: mode: One of `ELEM_MODE_*' */
 WtgControlPanel_DrawClockHandle(HDC hdc, POINT const *__restrict center,
@@ -1576,11 +2179,22 @@ WtgControlPanel_DrawElement(HDC hdc, UINT32 *base, unsigned int elem,
 			pct       = (double)Sys_GetVolume();
 			fillColor = GUI_RGBA(0x26, 0x92, 0xAD, 0xff);
 		}
-		w = (size_t)(pct * (double)w);
-		for (y = 0; y < h; ++y) {
-			UINT32 *scanline = &PIXEL(0, y);
-			for (x = 0; x < w; ++x)
-				scanline[x] = fillColor;
+		if (WtgControlPanel_IsSliderVertical(elem)) {
+			y = (size_t)(pct * (double)h);
+			while (y) {
+				UINT32 *scanline;
+				--y;
+				scanline = &PIXEL(0, h - y);
+				for (x = 0; x < w; ++x)
+					scanline[x] = fillColor;
+			}
+		} else {
+			w = (size_t)(pct * (double)w);
+			for (y = 0; y < h; ++y) {
+				UINT32 *scanline = &PIXEL(0, y);
+				for (x = 0; x < w; ++x)
+					scanline[x] = fillColor;
+			}
 		}
 		{
 			char text[64];
@@ -1590,7 +2204,7 @@ WtgControlPanel_DrawElement(HDC hdc, UINT32 *base, unsigned int elem,
 		}
 	}	break;
 
-	case CP_ELEM_BATTERY: {
+	case CP_ELEM_CLK_BATTERY: {
 		RECT clkRc = cp.cp_elems[elem];
 		POINT clkCenter;
 		GetLocalTime(&cp.cp_now);
@@ -1618,12 +2232,54 @@ WtgControlPanel_DrawElement(HDC hdc, UINT32 *base, unsigned int elem,
 			DrawTextA(hdc, nowbuf, len, &clkRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 			clkRc.bottom += halfHeight;
 			clkRc.top += halfHeight;
-			len = sprintf(nowbuf, "%u.%u.%u", cp.cp_now.wDay, cp.cp_now.wMonth, cp.cp_now.wYear);
+			len = sprintf(nowbuf, "%.2u.%.2u.%u",
+			              cp.cp_now.wDay, cp.cp_now.wMonth,
+			              cp.cp_now.wYear);
 			DrawTextA(hdc, nowbuf, len, &clkRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 		}
 		WtgControlPanel_DrawClockHandle(hdc, &clkCenter, (double)cp.cp_now.wSecond / 60.0, (double)(clkCenter.x - clkRc.left));
 		WtgControlPanel_DrawClockHandle(hdc, &clkCenter, (double)cp.cp_now.wMinute / 60.0, (double)(clkCenter.x - clkRc.left) * (2.0 / 3.0));
-		WtgControlPanel_DrawClockHandle(hdc, &clkCenter, (double)(cp.cp_now.wHour % 12) / 12.0, (double)((clkCenter.x - clkRc.left) / 2));
+		WtgControlPanel_DrawClockHandle(hdc, &clkCenter, (double)(cp.cp_now.wHour % 12) / 12.0, (double)(clkCenter.x - clkRc.left) * (1.0 / 3.0));
+	}	break;
+
+	case CP_ELEM_TGL_WIFI: {
+		if (Sys_GetWifiEnabled()) {
+			for (y = 1; y < h - 1; ++y) {
+				for (x = 1; x < w - 1; ++x) {
+					PIXEL(x, y) = GUI_RGBA(0x78, 0xdb, 0x61, 0xff);
+				}
+			}
+		}
+		if (w >= GUI_WIDTH(gui_cp_wifi) &&
+		    h >= GUI_HEIGHT(gui_cp_wifi)) {
+			LONG x, y;
+			x = (w - GUI_WIDTH(gui_cp_wifi)) / 2;
+			y = (h - GUI_HEIGHT(gui_cp_wifi)) / 2;
+			Wtg_PerPixelBlend(&PIXEL(x, y), gui_cp_wifi,
+			                  GUI_WIDTH(gui_cp_wifi),
+			                  GUI_HEIGHT(gui_cp_wifi), stride,
+			                  GUI_WIDTH(gui_cp_wifi));
+		}
+	}	break;
+
+	case CP_ELEM_TGL_BLUETOOTH: {
+		if (Sys_GetBluetoothEnabled()) {
+			for (y = 1; y < h - 1; ++y) {
+				for (x = 1; x < w - 1; ++x) {
+					PIXEL(x, y) = GUI_RGBA(0x78, 0xdb, 0x61, 0xff);
+				}
+			}
+		}
+		if (w >= GUI_WIDTH(gui_cp_bth) &&
+		    h >= GUI_HEIGHT(gui_cp_bth)) {
+			LONG x, y;
+			x = (w - GUI_WIDTH(gui_cp_bth)) / 2;
+			y = (h - GUI_HEIGHT(gui_cp_bth)) / 2;
+			Wtg_PerPixelBlend(&PIXEL(x, y), gui_cp_bth,
+			                  GUI_WIDTH(gui_cp_bth),
+			                  GUI_HEIGHT(gui_cp_bth), stride,
+			                  GUI_WIDTH(gui_cp_bth));
+		}
 	}	break;
 
 	default:
@@ -1714,6 +2370,8 @@ void WtgControlPanel_Redraw(void) {
 	if (!hdcMem)
 		LOGERROR_GLE("CreateCompatibleDC()");
 	hOldMemDcObject = (HBITMAP)SelectObject(hdcMem, hBackground);
+	if (hOldMemDcObject == NULL || hOldMemDcObject == HGDI_ERROR)
+		LOGERROR_GLE("SelectObject()");
 
 	SelectObject(hdcMem, GetStockObject(DC_BRUSH));
 	SelectObject(hdcMem, GetStockObject(DC_PEN));
@@ -1739,9 +2397,6 @@ void WtgControlPanel_Redraw(void) {
 		}
 	}
 
-
-	if (hOldMemDcObject == NULL || hOldMemDcObject == HGDI_ERROR)
-		LOGERROR_GLE("SelectObject()");
 	blend.BlendOp             = AC_SRC_OVER;
 	blend.BlendFlags          = 0;
 	blend.SourceConstantAlpha = 255;
@@ -1774,21 +2429,28 @@ static unsigned int WtgControlPanel_ElemAt(LONG x, LONG y) {
 
 /* Handle the user clicking on the index'd `elem'
  * Called after a release event if still within the
- * bounds of the original element. */
-static void WtgControlPanel_ClickElem(unsigned int elem) {
-	printf("TODO: WtgControlPanel_ClickElem(%u)\n", elem);
+ * bounds of the original element.
+ * @return: true: Need to do a re-draw */
+static bool WtgControlPanel_ClickElem(unsigned int elem) {
 	switch (elem) {
+
+	case CP_ELEM_TGL_WIFI:
+		Sys_SetWifiEnabled(!Sys_GetWifiEnabled());
+		return true;
+
+	case CP_ELEM_TGL_BLUETOOTH:
+		Sys_SetBluetoothEnabled(!Sys_GetBluetoothEnabled());
+		return true;
 
 	default:
 		break;
 	}
 
-	// TODO: CP_ELEM_TGL_WIFI
-	// TODO: CP_ELEM_TGL_BLUETOOTH
 	// TODO: CP_ELEM_TGL_ROTLOCK
 	// TODO: CP_ELEM_TGL_FLIGHTMODE
 	// TODO: CP_ELEM_TGL_NIGHTMODE
 	// TODO: CP_ELEM_TGL_PWRSAVE
+	return false;
 }
 
 /* Called whenever moving the pointer after an initial
@@ -1801,14 +2463,14 @@ static void WtgControlPanel_DragElem(unsigned int elem, LONG x, LONG y) {
 
 	case CP_ELEM_BRIGHTNESS: {
 		double position;
-		position = (double)x / (double)(cp.cp_elems[elem].right - cp.cp_elems[elem].left);
+		position = WtgControlPanel_GetSliderPositionAt(elem, x, y);
 		Sys_SetBrightness(position);
 		WtgControlPanel_Redraw();
 	}	break;
 
 	case CP_ELEM_VOLUME: {
 		float position;
-		position = (float)x / (float)(cp.cp_elems[elem].right - cp.cp_elems[elem].left);
+		position = (float)WtgControlPanel_GetSliderPositionAt(elem, x, y);
 		Sys_SetVolume(position);
 		WtgControlPanel_Redraw();
 	}	break;
@@ -1825,12 +2487,6 @@ static void WtgControlPanel_DragElemWrapper(unsigned int elem, LONG x, LONG y) {
 	WtgControlPanel_DragElem(elem, x, y);
 }
 
-/* Called whenever the hover-state of an element changes. */
-static void WtgControlPanel_OnHoverChanged(void) {
-	WtgControlPanel_Redraw();
-}
-
-
 static bool WtgControlPanel_OnPointerDown(UINT32 pointerId, LONG x, LONG y) {
 	unsigned int elem = WtgControlPanel_ElemAt(x, y);
 	WtgControlPanelApplet_SetTouch(&cp, pointerId, elem, elem);
@@ -1842,6 +2498,7 @@ static bool WtgControlPanel_OnPointerDown(UINT32 pointerId, LONG x, LONG y) {
 }
 
 static bool WtgControlPanel_OnPointerUp(UINT32 pointerId, LONG x, LONG y, BOOL hover) {
+	bool mustRedraw = false;
 	unsigned int origElem, currElem;
 	origElem = WtgControlPanelApplet_GetTouch(&cp, pointerId);
 	currElem = WtgControlPanel_ElemAt(x, y);
@@ -1852,10 +2509,13 @@ static bool WtgControlPanel_OnPointerUp(UINT32 pointerId, LONG x, LONG y, BOOL h
 	}
 	if (origElem != CP_ELEM_NONE) {
 		WtgControlPanel_DragElemWrapper(origElem, x, y);
-		if (origElem == currElem)
-			WtgControlPanel_ClickElem(origElem);
+		if (origElem == currElem) {
+			mustRedraw = WtgControlPanel_ClickElem(origElem);
+		}
 	}
 	if (origElem != CP_ELEM_NONE)
+		mustRedraw = true;
+	if (mustRedraw)
 		WtgControlPanel_Redraw();
 	return true;
 }
@@ -1874,7 +2534,7 @@ static bool WtgControlPanel_OnPointerMove(UINT32 pointerId, LONG x, LONG y, BOOL
 		newElem = WtgControlPanel_ElemAt(x, y);
 		if (oldElem != newElem) {
 			WtgControlPanelApplet_SetTouch(&cp, pointerId, CP_ELEM_NONE, newElem);
-			WtgControlPanel_OnHoverChanged();
+			WtgControlPanel_Redraw();
 		}
 	}
 	return true;
@@ -1929,7 +2589,10 @@ WtgControlPanel_WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 		break;
 
 	case WM_POINTERUP: {
-		if (!IS_POINTER_INCONTACT_WPARAM(wParam)) {
+		if (IS_POINTER_CANCELED_WPARAM(wParam)) {
+			if (WtgControlPanelApplet_DelTouch(&cp, GET_POINTERID_WPARAM(wParam)))
+				WtgControlPanel_Redraw();
+		} else if (!IS_POINTER_INCONTACT_WPARAM(wParam)) {
 			POINT pt;
 			pt.x = GET_X_LPARAM(lParam);
 			pt.y = GET_Y_LPARAM(lParam);
@@ -1943,7 +2606,6 @@ WtgControlPanel_WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
 #if 0
 	case WM_POINTERLEAVE: {
-		unsigned int elem;
 		UINT32 id = GET_POINTERID_WPARAM(wParam);
 		if (IS_POINTER_INCONTACT_WPARAM(wParam)) {
 			POINT pt;
@@ -1952,10 +2614,8 @@ WtgControlPanel_WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 			if (ScreenToClient(hWnd, &pt))
 				WtgControlPanel_OnPointerUp(id, pt.x, pt.y);
 		}
-		elem = WtgControlPanelApplet_GetHover(&cp, id);
-		WtgControlPanelApplet_DelTouch(&cp, id);
-		if (elem != CP_ELEM_NONE)
-			WtgControlPanel_OnHoverChanged();
+		if (WtgControlPanelApplet_DelTouch(&cp, id))
+			WtgControlPanel_Redraw();
 		return 0;
 	}	break;
 #endif
@@ -1984,11 +2644,8 @@ WtgControlPanel_WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 		break;
 
 	case WM_MOUSELEAVE: {
-		unsigned int elem;
-		elem = WtgControlPanelApplet_GetHover(&cp, (UINT32)-1);
-		WtgControlPanelApplet_DelTouch(&cp, (UINT32)-1);
-		if (elem != CP_ELEM_NONE)
-			WtgControlPanel_OnHoverChanged();
+		if (WtgControlPanelApplet_DelTouch(&cp, (UINT32)-1))
+			WtgControlPanel_Redraw();
 		return 0;
 	}	break;
 
@@ -2016,11 +2673,25 @@ static void WtgControlPanel_PlaceElements(void) {
 	mHalf.right     = rQuarter.left;
 	mHalf.bottom    = cp.cp_client.bottom;
 
-	cp.cp_elems[CP_ELEM_BRIGHTNESS]        = rQuarter;
-	cp.cp_elems[CP_ELEM_BRIGHTNESS].bottom = rQuarter.top + ((rQuarter.bottom - rQuarter.top) / 2);
-	cp.cp_elems[CP_ELEM_VOLUME]            = rQuarter;
-	cp.cp_elems[CP_ELEM_VOLUME].top        = cp.cp_elems[CP_ELEM_BRIGHTNESS].bottom;
-	cp.cp_elems[CP_ELEM_BATTERY]           = lQuarter;
+	{
+		LONG rQuarterW, rQuarterH;
+		rQuarterW = RC_WIDTH(rQuarter);
+		rQuarterH = RC_HEIGHT(rQuarter);
+		if (rQuarterW >= rQuarterH) {
+			/* Horizontal sliders */
+			cp.cp_elems[CP_ELEM_BRIGHTNESS]        = rQuarter;
+			cp.cp_elems[CP_ELEM_BRIGHTNESS].bottom = rQuarter.top + (rQuarterH / 2);
+			cp.cp_elems[CP_ELEM_VOLUME]            = rQuarter;
+			cp.cp_elems[CP_ELEM_VOLUME].top        = cp.cp_elems[CP_ELEM_BRIGHTNESS].bottom;
+		} else {
+			/* Vertical sliders */
+			cp.cp_elems[CP_ELEM_BRIGHTNESS]       = rQuarter;
+			cp.cp_elems[CP_ELEM_BRIGHTNESS].right = rQuarter.left + (rQuarterW / 2);
+			cp.cp_elems[CP_ELEM_VOLUME]           = rQuarter;
+			cp.cp_elems[CP_ELEM_VOLUME].left      = cp.cp_elems[CP_ELEM_BRIGHTNESS].right;
+		}
+	}
+	cp.cp_elems[CP_ELEM_CLK_BATTERY] = lQuarter;
 
 	buttonCols = (mHalf.right - mHalf.left) / CP_BUTTON_WIDTH;
 	buttonRows = (mHalf.bottom - mHalf.top) / CP_BUTTON_HEIGHT;
@@ -2030,7 +2701,7 @@ static void WtgControlPanel_PlaceElements(void) {
 	button_w = (double)(mHalf.right - mHalf.left) / (double)buttonCols;
 	button_h = (double)(mHalf.bottom - mHalf.top) / (double)buttonRows;
 	for (i = CP_ELEM_BUTTONS_FIRST; i <= CP_ELEM_BUTTONS_LAST; ++i) {
-		unsigned int grid_x, grid_y;
+		LONG grid_x, grid_y;
 		LONG button_center_x, button_center_y;
 		grid_x = (i - CP_ELEM_BUTTONS_FIRST) % buttonCols;
 		grid_y = (i - CP_ELEM_BUTTONS_FIRST) / buttonCols;
@@ -2188,7 +2859,6 @@ static bool WtgApplet_Done(void) {
 	/* Control panel... */
 	{
 		double yMax, dist = ga.ga_dist;
-		double visibility;
 		yMax = (double)(cp.cp_size.y - cp.cp_client.top);
 		if (!cp.cp_active) {
 			if (dist >= yMax / 2.0) {
@@ -2557,9 +3227,6 @@ do_update_gesture:
 		case WTG_GESTURE_KIND_ZOOM:
 		case WTG_GESTURE_KIND_ZOOM_RSTOR: {
 			double scale, radius, distance, max_scale;
-			POINT center;
-			LONG src_w, src_h;
-			LONG dst_w, dst_h;
 			RECT src, dst, scrollspace;
 			WINDOWPLACEMENT wp;
 			distance  = ga.ga_dist;
@@ -2624,13 +3291,6 @@ set_fallback_dst_position:
 				max_scale = 0.0;
 				goto set_fallback_dst_position;
 			}
-			dst_w    = dst.right - dst.left;
-			dst_h    = dst.bottom - dst.top;
-			center.x = dst.left + dst_w / 2;
-			center.y = dst.top + dst_h / 2;
-			src_w    = src.right - src.left;
-			src_h    = src.bottom - src.top;
-
 			/* Figure out how much scroll-space there is all around. */
 			scrollspace.left   = dst.left - src.left;
 			scrollspace.top    = dst.top - src.top;
@@ -3217,7 +3877,7 @@ create_new_touch_pointer:
 						size_t touch_index;
 						UINT32 hwId = gesture_info[i].gt_hwid;
 						touch_index = WtgTouch_FindInfoIndex(hwId);
-						if (touch_index >= 0) {
+						if (touch_index < touch_count) {
 							POINTER_TOUCH_INFO *info;
 							/* This one stayed! */
 							info = &touch_info[touch_index];
@@ -3391,12 +4051,12 @@ int main(int argc, char *argv[]) {
 	(void)argv;
 	hApplicationInstance = GetModuleHandle(NULL);
 	if (!DynApi_InitializeUser32())
-		err(1, "DynApi_InitializeUser32() failed: %lu", GetLastError());
+		err(1, "DynApi_InitializeUser32() failed: %lu", (unsigned long)GetLastError());
 	if (!DynApi_InitializeDwm())
-		err(1, "DynApi_InitializeDwm() failed: %lu", GetLastError());
+		err(1, "DynApi_InitializeDwm() failed: %lu", (unsigned long)GetLastError());
 	Wtg_MakeProcessDPIAware();
 	if (!InitializeTouchInjection(MAX_TOUCH_COUNT, TOUCH_FEEDBACK_NONE))
-		err(1, "InitializeTouchInjection() failed: %lu\n", GetLastError());
+		err(1, "InitializeTouchInjection() failed: %lu\n", (unsigned long)GetLastError());
 	if (!WtgShadow_RegisterWindowClass())
 		err(1, "Failed to register shadow window class\n");
 	if ((hTouchGrabberWindow = WtgTouchGrabber_CreateWindow()) == NULL)
@@ -3404,7 +4064,7 @@ int main(int argc, char *argv[]) {
 //	if (!RegisterTouchWindow(myWindow, 0))
 //		err(1, "RegisterTouchWindow() failed: %lu\n", GetLastError());
 	if (!RegisterPointerInputTarget(hTouchGrabberWindow, PT_TOUCH))
-		err(1, "RegisterPointerInputTarget() failed: %lu\n", GetLastError());
+		err(1, "RegisterPointerInputTarget() failed: %lu\n", (unsigned long)GetLastError());
 	for (;;) {
 		MSG msg;
 		BOOL bRet;

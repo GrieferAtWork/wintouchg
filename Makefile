@@ -1,5 +1,5 @@
 
-CFLAGS := -g
+CFLAGS := -g -Wall -Wextra
 
 wintouchg.exe: main.o manifest.o gui/gui.o
 	gcc ${CFLAGS} -o wintouchg.exe main.o manifest.o gui/gui.o -lgdi32
