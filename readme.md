@@ -115,6 +115,7 @@ A Windows Application that enables 4+ finger Multi-Touch-Gestures for controllin
 		- Rotation Lock
 		- Standby control (tri-state: allow standby, prevent standby, keep screen on)
 			- Also displays keep-alive state as set by other programs, and the delay before machine will enter standby mode (if currently possible)
+			- NOTE: In case you're wondering why wintouchg might shows that your machine can never go into standby mode, then you must [Change HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Power\CsEnabled to 0](https://answers.microsoft.com/en-us/windows/forum/windows_10-other_settings/idle-time-out/81c4f0ac-37ca-4227-80cd-abedf007d59b) (doing this may even improve your machine's battery life while in standby mode!)
 	- Planned buttons: toggle Flight-Mode, Night-Mode, Performance/Powersaving
 - Disappears once it looses focus
 - Doesn't exist, and isn't hooked into anything while not visible (meaning that it won't affect system performance while not shown)

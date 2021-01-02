@@ -3338,7 +3338,6 @@ done_after_cp:
 static void
 WtgGestureAnimation_SetBlur(WtgGestureAnimation *__restrict self,
                             double strength) {
-	strength = 0.0;
 	/* Clamp blur strength */
 	if (strength < 0.0)
 		strength = 0.0;
