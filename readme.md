@@ -109,7 +109,13 @@ A Windows Application that enables 4+ finger Multi-Touch-Gestures for controllin
 - Contains a number of useful buttons & sliders for controlling your PC:
 	- Sliders for display brightness and volume
 	- An analogue and digital clock, together with a date display
-	- A number of buttons that havn't been programmed yet, but will be used to toggle WiFi, Bluetooth, Rotation Lock, Flight-Mode, Night-Mode, Performance/Powersaving
+	- Toggle-buttons for:
+		- WiFi
+		- Bluetooth
+		- Rotation Lock
+		- Standby control (tri-state: allow standby, prevent standby, keep screen on)
+			- Also displays keep-alive state as set by other programs, and the delay before machine will enter standby mode (if currently possible)
+	- Planned buttons: toggle Flight-Mode, Night-Mode, Performance/Powersaving
 - Disappears once it looses focus
 - Doesn't exist, and isn't hooked into anything while not visible (meaning that it won't affect system performance while not shown)
 

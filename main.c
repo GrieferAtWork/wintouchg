@@ -157,17 +157,31 @@ static void Wtg_WarnMissingShLibFunction(HMODULE hModule, LPCSTR lpProcName) {
 
 
 /* Max # of touch points to support */
+#ifndef WTG_MAX_TOUCH_INPUTS
 #define WTG_MAX_TOUCH_INPUTS 256
+#endif /* !WTG_MAX_TOUCH_INPUTS */
 
 /* Pixel distance threshold for gestures. */
+#ifndef WTG_GESTURE_SWIPE_THRESHOLD
 #define WTG_GESTURE_SWIPE_THRESHOLD        50.0  /* Average distance traveled */
+#endif /* !WTG_GESTURE_SWIPE_THRESHOLD */
+#ifndef WTG_GESTURE_SWIPE_COMMIT_THRESHOLD
 #define WTG_GESTURE_SWIPE_COMMIT_THRESHOLD 200.0 /* Min. distance for commit */
+#endif /* !WTG_GESTURE_SWIPE_COMMIT_THRESHOLD */
+#ifndef WTG_GESTURE_ZOOM_THRESHOLD
 #define WTG_GESTURE_ZOOM_THRESHOLD         150.0 /* Average distance traveled */
+#endif /* !WTG_GESTURE_ZOOM_THRESHOLD */
+#ifndef WTG_GESTURE_ZOOM_COMMIT_THRESHOLD
 #define WTG_GESTURE_ZOOM_COMMIT_THRESHOLD  200.0 /* Min. distance for commit */
+#endif /* !WTG_GESTURE_ZOOM_COMMIT_THRESHOLD */
 
 /* Multi-touch gesture recognition bounds. */
+#ifndef WTG_GESTURE_STRT_TOUCH_COUNT
 #define WTG_GESTURE_STRT_TOUCH_COUNT 4 /* Begin a multi-touch gesture if >= this # of touch inputs are present */
+#endif /* !WTG_GESTURE_STRT_TOUCH_COUNT */
+#ifndef WTG_GESTURE_STOP_TOUCH_COUNT
 #define WTG_GESTURE_STOP_TOUCH_COUNT 1 /* Stop a multi-touch gesture if <= this # of touch inputs remain */
+#endif /* !WTG_GESTURE_STOP_TOUCH_COUNT */
 
 static HINSTANCE hApplicationInstance;
 
@@ -183,8 +197,12 @@ static HINSTANCE hApplicationInstance;
 	typedef return (cc * LP##name) args;                \
 	static LP##name pdyn_##name = NULL
 
-/* Ole32 API. */
 #ifndef CONFIG_WITHOUT_CP
+/* PowrProf.dll API. */
+DEFINE_DYNAMIC_FUNCTION(NTSTATUS, WINAPI, CallNtPowerInformation, (/*POWER_INFORMATION_LEVEL*/ int InformationLevel, PVOID InputBuffer, ULONG InputBufferLength, PVOID OutputBuffer, ULONG OutputBufferLength));
+#define CallNtPowerInformation (*pdyn_CallNtPowerInformation)
+
+/* Ole32 API. */
 #undef CO_MTA_USAGE_COOKIE
 #define CO_MTA_USAGE_COOKIE real_CO_MTA_USAGE_COOKIE
 DECLARE_HANDLE(CO_MTA_USAGE_COOKIE);
@@ -259,6 +277,7 @@ DEFINE_DYNAMIC_FUNCTION(HRESULT, STDAPICALLTYPE, DwmExtendFrameIntoClientArea, (
 		return hResult;                                                                    \
 	}
 #ifndef CONFIG_WITHOUT_CP
+DEFINE_LAZY_LIBRARY_LOADER(pdyn_PowrProf, DynApi_GetPowrProfHandle, L"POWRPROF", L"PowrProf.dll");
 DEFINE_LAZY_LIBRARY_LOADER(pdyn_Ole32, DynApi_GetOld32Handle, L"OLE32", L"Ole32.dll");
 #endif /* !CONFIG_WITHOUT_CP */
 DEFINE_LAZY_LIBRARY_LOADER(pdyn_User32, DynApi_GetUser32Handle, L"USER32", L"User32.dll");
@@ -284,6 +303,15 @@ static FARPROC DynApi_GetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
 
 /* Ensure that the given API is available (returning `true' if it is, and `false' otherwise) */
 #ifndef CONFIG_WITHOUT_CP
+static bool DynApi_InitializePowrProf(void) {
+	HMODULE hPowrProf = DynApi_GetPowrProfHandle();
+	if (!hPowrProf)
+		goto fail;
+	DynApi_LoadFunction(hPowrProf, CallNtPowerInformation);
+	return true;
+fail:
+	return false;
+}
 static bool DynApi_InitializeOld32(void) {
 	HMODULE hOle32 = DynApi_GetOld32Handle();
 	if (!hOle32)
@@ -1125,6 +1153,106 @@ static void Sys_SetRotationEnabled(bool enabled) {
 }
 
 
+#define SYS_RUNSTATE_NORMAL      0x0000 /* Normal run state */
+#define SYS_RUNSTATE_NOSTANDYBY  0x0001 /* Don't go into stand-by */
+#define SYS_RUNSTATE_NOSCREENOFF 0x0002 /* Don't turn the screen off */
+#define SYS_RUNSTATE_EXTPROC     0x8000 /* Run state is being controlled by another process */
+
+static HANDLE wintouchg_keepawake_thread = NULL;
+static HANDLE wintouchg_keepawake_didinit = NULL;
+static DWORD WINAPI SysIntern_KeepAliveRunStateThread(LPVOID lpThreadParameter) {
+	printf("[trace] Set thread execution state: %#x\n",
+	       (EXECUTION_STATE)(uintptr_t)lpThreadParameter);
+	if (!SetThreadExecutionState((EXECUTION_STATE)(uintptr_t)lpThreadParameter))
+		LOGERROR_GLE("SetThreadExecutionState()");
+	ReleaseSemaphore(wintouchg_keepawake_didinit, 1, NULL);
+	for (;;) {
+		SleepEx(INFINITE, TRUE);
+	}
+	return 0;
+}
+static unsigned int wintouchg_execution_state = 0;
+static void SysIntern_TerminateKeepAliveThread(void) {
+	printf("Enter: SysIntern_TerminateKeepAliveThread\n");
+	if (wintouchg_keepawake_thread != NULL)
+		TerminateThread(wintouchg_keepawake_thread, 0);
+	printf("Leave: SysIntern_TerminateKeepAliveThread\n");
+}
+static void SysIntern_RegisterAtExitTerminateKeepAliveThread(void) {
+	static bool did_register = false;
+	if (!did_register) {
+		did_register = true;
+		atexit(&SysIntern_TerminateKeepAliveThread);
+	}
+}
+
+static void Sys_SetRunState(unsigned int state) {
+	HANDLE hNewThread = NULL;
+	EXECUTION_STATE esNewState;
+	if (state == wintouchg_execution_state)
+		return;
+	if (state & SYS_RUNSTATE_NOSCREENOFF)
+		esNewState = ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED;
+	else if (state & SYS_RUNSTATE_NOSTANDYBY)
+		esNewState = ES_CONTINUOUS | ES_SYSTEM_REQUIRED;
+	else {
+		esNewState = 0;
+	}
+	if (esNewState != 0) {
+		wintouchg_keepawake_didinit = CreateSemaphoreW(NULL, 0, 1, NULL);
+		if (!wintouchg_keepawake_didinit)
+			LOGERROR_GLE("CreateSemaphoreW()");
+		hNewThread = CreateThread(NULL, 0, &SysIntern_KeepAliveRunStateThread,
+		                          (LPVOID)(uintptr_t)esNewState, 0, NULL);
+		if (!hNewThread) {
+			CloseHandle(wintouchg_keepawake_didinit);
+			wintouchg_keepawake_didinit = NULL;
+			LOGERROR_GLE("CreateThread()");
+			return;
+		}
+		/* Wait for the thread to set the new execution state. */
+		if (WaitForSingleObject(wintouchg_keepawake_didinit, INFINITE) == WAIT_FAILED)
+			LOGERROR_GLE("WaitForSingleObject()");
+		CloseHandle(wintouchg_keepawake_didinit);
+		wintouchg_keepawake_didinit = NULL;
+	}
+	/* Terminate the old keep-alive thread. */
+	if (wintouchg_keepawake_thread != NULL) {
+		printf("[trace] Kill (old) keep-awake thread\n");
+		if (!TerminateThread(wintouchg_keepawake_thread, 0))
+			LOGERROR_GLE("TerminateThread()");
+		CloseHandle(wintouchg_keepawake_thread);
+	}
+	SysIntern_RegisterAtExitTerminateKeepAliveThread();
+	wintouchg_keepawake_thread = hNewThread;
+	wintouchg_execution_state  = state;
+}
+static unsigned int Sys_GetRunState(void) {
+	ULONG esState = 0;
+	if (!pdyn_CallNtPowerInformation)
+		DynApi_InitializePowrProf();
+	if (pdyn_CallNtPowerInformation) {
+		NTSTATUS nsError;
+		nsError = CallNtPowerInformation(16 /*SystemExecutionState*/, NULL, 0, &esState, sizeof(esState));
+		if (nsError < 0) {
+			LOGERROR("CallNtPowerInformation() failed: %ld\n", (long)nsError);
+			esState = 0;
+		}
+	}
+	if (esState & ES_DISPLAY_REQUIRED) {
+		if (wintouchg_execution_state & SYS_RUNSTATE_NOSCREENOFF)
+			return SYS_RUNSTATE_NOSCREENOFF;
+		return SYS_RUNSTATE_EXTPROC | SYS_RUNSTATE_NOSCREENOFF;
+	}
+	if (esState & ES_SYSTEM_REQUIRED) {
+		if (wintouchg_execution_state & SYS_RUNSTATE_NOSTANDYBY)
+			return SYS_RUNSTATE_NOSTANDYBY;
+		return SYS_RUNSTATE_EXTPROC | SYS_RUNSTATE_NOSTANDYBY;
+	}
+	return SYS_RUNSTATE_NORMAL;
+}
+
+
 /* TODO: CP_ELEM_TGL_NIGHTMODE: Night mode
  *  - HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\Cache\DefaultAccount\$$windows.data.bluelightreduction.bluelightreductionstate\Current
  * Source: Own reverse engineering */
@@ -1134,7 +1262,7 @@ static void Sys_SetRotationEnabled(bool enabled) {
  * Source: https://stackoverflow.com/questions/42273812/how-to-detect-airplane-mode-programmatically-in-laptop-with-windows-10-using-uwp
  */
 /* TODO: CP_ELEM_TGL_PWRSAVE:    Powersaving mode enable/disable */
-/* TODO: Battery state/levels:   powrprof.dll? (maybe)  */
+/* TODO: Battery state/levels:   https://docs.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-system_battery_state */
 #endif /* !CONFIG_WITHOUT_CP */
 /************************************************************************/
 
@@ -1963,18 +2091,19 @@ static void WtgAppSwitcherApplet_Fini(WtgAppSwitcherApplet *__restrict self) {
 #endif /* !CONFIG_WITHOUT_AS */
 
 #ifndef CONFIG_WITHOUT_CP
-#define CP_ELEM_NONE           ((unsigned int)-1) /* No element */
-#define CP_ELEM_BRIGHTNESS     0 /* Brightness slider */
-#define CP_ELEM_VOLUME         1 /* Volume slider */
-#define CP_ELEM_CLK_BATTERY    2 /* Battery & Clock information */
-#define CP_ELEM_BUTTONS_FIRST  CP_ELEM_TGL_WIFI /* First button */
-#define CP_ELEM_TGL_WIFI       3 /* Toggle wifi */
-#define CP_ELEM_TGL_BLUETOOTH  4 /* Toggle bluetooth */
-#define CP_ELEM_TGL_ROTLOCK    5 /* Toggle rotation lock */
-#define CP_ELEM_TGL_FLIGHTMODE 6 /* Toggle flight mode */
-#define CP_ELEM_TGL_NIGHTMODE  7 /* Toggle night mode */
-#define CP_ELEM_TGL_PWRSAVE    8 /* Toggle powersaving mode */
-#define CP_ELEM_BUTTON_USER_LO 9                                /* User-defined buttons */
+#define CP_ELEM_NONE            ((unsigned int)-1) /* No element */
+#define CP_ELEM_BRIGHTNESS      0 /* Brightness slider */
+#define CP_ELEM_VOLUME          1 /* Volume slider */
+#define CP_ELEM_CLK_BATTERY     2 /* Battery & Clock information */
+#define CP_ELEM_BUTTONS_FIRST   CP_ELEM_TGL_WIFI /* First button */
+#define CP_ELEM_TGL_WIFI        3 /* Toggle wifi */
+#define CP_ELEM_TGL_BLUETOOTH   4 /* Toggle bluetooth */
+#define CP_ELEM_TGL_ROTLOCK     5 /* Toggle rotation lock */
+#define CP_ELEM_TGL_RUNSTATE    6 /* Cycle run states */
+#define CP_ELEM_TGL_FLIGHTMODE  7 /* Toggle flight mode */
+#define CP_ELEM_TGL_NIGHTMODE   8 /* Toggle night mode */
+#define CP_ELEM_TGL_PWRSAVE     9 /* Toggle powersaving mode */
+#define CP_ELEM_BUTTON_USER_LO 10                               /* User-defined buttons */
 #define CP_ELEM_BUTTON_USER_HI (CP_ELEM_BUTTONS_FIRST + 14 - 1) /* *ditto* */
 #define CP_ELEM_BUTTONS_LAST   CP_ELEM_BUTTON_USER_HI           /* Last button */
 #define CP_ELEM_COUNT          (CP_ELEM_BUTTON_USER_HI + 1)     /* # of elements */
@@ -2111,6 +2240,9 @@ extern uint8_t const gui_cp_wifi[64][64][4];
 extern uint8_t const gui_cp_bth[32][64][4];
 extern uint8_t const gui_cp_nlck[64][64][4];
 extern uint8_t const gui_cp_rlck[64][64][4];
+extern uint8_t const gui_cp_standby[64][40][4];
+extern uint8_t const gui_cp_blkscrn[64][40][4];
+extern uint8_t const gui_cp_running[64][40][4];
 #endif /* !CONFIG_WITHOUT_CP */
 #define GUI_RGBA(r, g, b, a) /* XXX: Byteorder??? */ \
 	((UINT32)(b) | ((UINT32)(g) << 8) | ((UINT32)(r) << 16) | ((UINT32)(a) << 24))
@@ -2272,7 +2404,7 @@ WtgControlPanel_DrawElement(HDC hdc, UINT32 *base, unsigned int elem,
 			fillColor = GUI_RGBA(0x78, 0xdb, 0x61, 0xff);
 		} else {
 			pct       = (double)Sys_GetVolume();
-			fillColor = GUI_RGBA(0x26, 0x92, 0xAD, 0xff);
+			fillColor = GUI_RGBA(0x26, 0x92, 0xad, 0xff);
 		}
 		if (WtgControlPanel_IsSliderVertical(elem)) {
 			y = (size_t)(pct * (double)h);
@@ -2395,6 +2527,64 @@ WtgControlPanel_DrawElement(HDC hdc, UINT32 *base, unsigned int elem,
 			                  GUI_WIDTH(gui_cp_rlck),
 			                  GUI_HEIGHT(gui_cp_rlck), stride,
 			                  GUI_WIDTH(gui_cp_rlck));
+		}
+	}	break;
+
+	case CP_ELEM_TGL_RUNSTATE: {
+		unsigned int runstate;
+		UINT32 bkgColor = 0;
+		runstate = Sys_GetRunState();
+		if (runstate & SYS_RUNSTATE_EXTPROC)
+			bkgColor = GUI_RGBA(0xdb, 0xb9, 0x53, 0xff);
+		else if (runstate & SYS_RUNSTATE_NOSCREENOFF)
+			bkgColor = GUI_RGBA(0x78, 0xdb, 0x61, 0xff);
+		else if (runstate & SYS_RUNSTATE_NOSTANDYBY) {
+			bkgColor = GUI_RGBA(0x26, 0x92, 0xad, 0xff);
+		}
+		if (bkgColor != 0) {
+			for (y = 1; y < h - 1; ++y) {
+				for (x = 1; x < w - 1; ++x) {
+					PIXEL(x, y) = bkgColor;
+				}
+			}
+		}
+		if (w >= GUI_WIDTH(gui_cp_standby) &&
+		    h >= GUI_HEIGHT(gui_cp_standby)) {
+			LONG x, y;
+			void const *icon = gui_cp_standby;
+			if (runstate & SYS_RUNSTATE_NOSCREENOFF)
+				icon = gui_cp_running;
+			else if (runstate & SYS_RUNSTATE_NOSTANDYBY) {
+				icon = gui_cp_blkscrn;
+			}
+			x = (w - GUI_WIDTH(gui_cp_standby)) / 2;
+			y = (h - GUI_HEIGHT(gui_cp_standby)) / 2;
+			Wtg_PerPixelBlend(&PIXEL(x, y), icon,
+			                  GUI_WIDTH(gui_cp_standby),
+			                  GUI_HEIGHT(gui_cp_standby), stride,
+			                  GUI_WIDTH(gui_cp_standby));
+		}
+		/* Display how long it'll take until the machine will go into standby mode. */
+		if (!(runstate & (SYS_RUNSTATE_NOSCREENOFF | SYS_RUNSTATE_NOSTANDYBY)) &&
+		    pdyn_CallNtPowerInformation != NULL) {
+#undef SYSTEM_POWER_INFORMATION
+#define SYSTEM_POWER_INFORMATION real_SYSTEM_POWER_INFORMATION
+			typedef struct {
+				ULONG MaxIdlenessAllowed;
+				ULONG Idleness;
+				ULONG TimeRemaining;
+				UCHAR CoolingMode;
+			} SYSTEM_POWER_INFORMATION;
+			NTSTATUS nsError;
+			SYSTEM_POWER_INFORMATION spi;
+			memset(&spi, 0, sizeof(spi));
+			nsError = CallNtPowerInformation(12 /*SystemPowerInformation*/,
+			                                 NULL, 0, &spi, sizeof(spi));
+			if (nsError >= 0 && spi.TimeRemaining != 0) {
+				char buf[32];
+				int len = sprintf(buf, "%u:%.2u", spi.TimeRemaining / 60, spi.TimeRemaining % 60);
+				DrawTextA(hdc, buf, len, &cp.cp_elems[elem], DT_CENTER | DT_BOTTOM | DT_SINGLELINE);
+			}
 		}
 	}	break;
 
@@ -2559,6 +2749,22 @@ static bool WtgControlPanel_ClickElem(unsigned int elem) {
 	case CP_ELEM_TGL_ROTLOCK:
 		Sys_SetRotationEnabled(!Sys_GetRotationEnabled());
 		return true;
+
+	case CP_ELEM_TGL_RUNSTATE: {
+		unsigned int oldRunState;
+		unsigned int newRunState;
+		oldRunState = Sys_GetRunState();
+		newRunState = ((oldRunState & 3) + 1) % 3;
+		if (oldRunState & SYS_RUNSTATE_EXTPROC) {
+			if (oldRunState & SYS_RUNSTATE_NOSCREENOFF) {
+				newRunState = SYS_RUNSTATE_NOSCREENOFF;
+				if (wintouchg_execution_state & SYS_RUNSTATE_NOSCREENOFF)
+					newRunState = 0;
+			}
+		}
+		Sys_SetRunState(newRunState);
+		return true;
+	}	break;
 
 	default:
 		break;
@@ -3132,6 +3338,7 @@ done_after_cp:
 static void
 WtgGestureAnimation_SetBlur(WtgGestureAnimation *__restrict self,
                             double strength) {
+	strength = 0.0;
 	/* Clamp blur strength */
 	if (strength < 0.0)
 		strength = 0.0;

@@ -48,16 +48,19 @@ print('#endif /* __cplusplus */')
 print('')
 
 img = Image.open('gui.png').convert('RGBA')
-AREAS = [('CONFIG_WITHOUT_CP', 'cp_l',    (0,   0,  32, 1)),
-         ('CONFIG_WITHOUT_CP', 'cp_c',    (33,  0,  1,  1)),
-         ('CONFIG_WITHOUT_CP', 'cp_r',    (35,  0,  32, 1)),
-         ('CONFIG_WITHOUT_CP', 'cp_bl',   (0,   2,  32, 32)),
-         ('CONFIG_WITHOUT_CP', 'cp_b',    (33,  2,  1,  32)),
-         ('CONFIG_WITHOUT_CP', 'cp_br',   (35,  2,  32, 32)),
-         ('CONFIG_WITHOUT_CP', 'cp_wifi', (0,   35, 64, 64)),
-         ('CONFIG_WITHOUT_CP', 'cp_bth',  (65,  35, 32, 64)),
-         ('CONFIG_WITHOUT_CP', 'cp_nlck', (98,  35, 64, 64)),
-         ('CONFIG_WITHOUT_CP', 'cp_rlck', (163, 35, 64, 64)),
+AREAS = [('CONFIG_WITHOUT_CP', 'cp_l',       (0,   0,   32, 1)),
+         ('CONFIG_WITHOUT_CP', 'cp_c',       (33,  0,   1,  1)),
+         ('CONFIG_WITHOUT_CP', 'cp_r',       (35,  0,   32, 1)),
+         ('CONFIG_WITHOUT_CP', 'cp_bl',      (0,   2,   32, 32)),
+         ('CONFIG_WITHOUT_CP', 'cp_b',       (33,  2,   1,  32)),
+         ('CONFIG_WITHOUT_CP', 'cp_br',      (35,  2,   32, 32)),
+         ('CONFIG_WITHOUT_CP', 'cp_wifi',    (0,   35,  64, 64)),
+         ('CONFIG_WITHOUT_CP', 'cp_bth',     (65,  35,  32, 64)),
+         ('CONFIG_WITHOUT_CP', 'cp_nlck',    (98,  35,  64, 64)),
+         ('CONFIG_WITHOUT_CP', 'cp_rlck',    (163, 35,  64, 64)),
+         ('CONFIG_WITHOUT_CP', 'cp_standby', (0,   100, 64, 40)),
+         ('CONFIG_WITHOUT_CP', 'cp_blkscrn', (65,  100, 64, 40)),
+         ('CONFIG_WITHOUT_CP', 'cp_running', (130, 100, 64, 40)),
          ]
 print("#if 0")
 prevCond = None
