@@ -48,30 +48,44 @@ print('#endif /* __cplusplus */')
 print('')
 
 img = Image.open('gui.png').convert('RGBA')
-AREAS = [('cp_l',    (0,   0,  32, 1)),
-         ('cp_c',    (33,  0,  1,  1)),
-         ('cp_r',    (35,  0,  32, 1)),
-         ('cp_bl',   (0,   2,  32, 32)),
-         ('cp_b',    (33,  2,  1,  32)),
-         ('cp_br',   (35,  2,  32, 32)),
-         ('cp_wifi', (0,   35, 64, 64)),
-         ('cp_bth',  (65,  35, 32, 64)),
-         ('cp_nlck', (98,  35, 64, 64)),
-         ('cp_rlck', (163, 35, 64, 64)),
+AREAS = [('CONFIG_WITHOUT_CP', 'cp_l',    (0,   0,  32, 1)),
+         ('CONFIG_WITHOUT_CP', 'cp_c',    (33,  0,  1,  1)),
+         ('CONFIG_WITHOUT_CP', 'cp_r',    (35,  0,  32, 1)),
+         ('CONFIG_WITHOUT_CP', 'cp_bl',   (0,   2,  32, 32)),
+         ('CONFIG_WITHOUT_CP', 'cp_b',    (33,  2,  1,  32)),
+         ('CONFIG_WITHOUT_CP', 'cp_br',   (35,  2,  32, 32)),
+         ('CONFIG_WITHOUT_CP', 'cp_wifi', (0,   35, 64, 64)),
+         ('CONFIG_WITHOUT_CP', 'cp_bth',  (65,  35, 32, 64)),
+         ('CONFIG_WITHOUT_CP', 'cp_nlck', (98,  35, 64, 64)),
+         ('CONFIG_WITHOUT_CP', 'cp_rlck', (163, 35, 64, 64)),
          ]
-print("/*")
+print("#if 0")
+prevCond = None
 for a in AREAS:
-	name = "gui_" + a[0]
-	area = a[1]
+	if a[0] != prevCond:
+		if prevCond is not None:
+			print("#endif /* !" + prevCond + " */")
+		print("#ifndef " + a[0])
+		prevCond = a[0]
+	name = "gui_" + a[1]
+	area = a[2]
 	print("extern uint8_t const " + name + "[" + str(area[2]) + "][" + str(area[3]) + "][4];")
-print("*/")
+if prevCond is not None:
+	print("#endif /* !" + prevCond + " */")
+print("#endif")
 print("")
 def hex2(x):
 	return "0x" + hex(x)[2:].zfill(2)
 
+prevCond = None
 for a in AREAS:
-	name = "gui_" + a[0]
-	area = a[1]
+	if a[0] != prevCond:
+		if prevCond is not None:
+			print("#endif /* !" + prevCond + " */")
+		print("#ifndef " + a[0])
+		prevCond = a[0]
+	name = "gui_" + a[1]
+	area = a[2]
 	bounds = (area[0], area[1], area[0] + area[2], area[1] + area[3])
 	data = list(img.crop(bounds).getdata())
 	cnt  = area[2] * area[3]
@@ -96,7 +110,8 @@ for a in AREAS:
 			print("")
 		i = i + 1
 	print("};")
-
+if prevCond is not None:
+	print("#endif /* !" + prevCond + " */")
 print('')
 print('#ifdef __cplusplus')
 print('} /* extern "C" */')
