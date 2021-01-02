@@ -19,10 +19,10 @@
  */
 #ifndef GUARD_WINTOUCHG_MAIN_C
 #define GUARD_WINTOUCHG_MAIN_C 1
-
 #define WINVER 0x0602
 #define _CRT_SECURE_NO_DEPRECATE 1
 #define _CRT_SECURE_NO_WARNINGS 1
+#define CINTERFACE 1
 
 #include <Windows.h>
 #include <Windowsx.h>
@@ -39,8 +39,14 @@
 #include <string.h>
 #include <time.h>
 #include <wchar.h>
-//#include <wlanapi.h>
-//#include <bluetoothapis.h>
+
+/* CONFIG: Disable the control panel. */
+#undef CONFIG_WITHOUT_CP
+#define CONFIG_WITHOUT_CP 1
+
+/* CONFIG: Disable the application switches. */
+#undef CONFIG_WITHOUT_AS
+#define CONFIG_WITHOUT_AS 1
 
 #ifdef __cplusplus
 extern "C" {
@@ -181,17 +187,19 @@ static HINSTANCE hApplicationInstance;
 	static LP##name pdyn_##name = NULL
 
 /* Ole32 API. */
+#ifndef CONFIG_WITHOUT_CP
 #undef CO_MTA_USAGE_COOKIE
 #define CO_MTA_USAGE_COOKIE real_CO_MTA_USAGE_COOKIE
 DECLARE_HANDLE(CO_MTA_USAGE_COOKIE);
 DEFINE_DYNAMIC_FUNCTION(HRESULT, STDAPICALLTYPE, CoInitialize, (LPVOID pvReserved));
-DEFINE_DYNAMIC_FUNCTION(HRESULT, STDAPICALLTYPE, CoCreateInstance, (REFCLSID rclsid, LPUNKNOWN pUnkOuter, DWORD dwClsContext, REFIID riid, LPVOID *ppv));
+DEFINE_DYNAMIC_FUNCTION(HRESULT, STDAPICALLTYPE, CoCreateInstance, (GUID const *rclsid, LPUNKNOWN pUnkOuter, DWORD dwClsContext, GUID const *riid, LPVOID *ppv));
 DEFINE_DYNAMIC_FUNCTION(void, STDAPICALLTYPE, CoUninitialize, (void));
 DEFINE_DYNAMIC_FUNCTION(HRESULT, STDAPICALLTYPE, CoIncrementMTAUsage, (CO_MTA_USAGE_COOKIE * pCookie));
 #define CoInitialize        (*pdyn_CoInitialize)
 #define CoCreateInstance    (*pdyn_CoCreateInstance)
 #define CoUninitialize      (*pdyn_CoUninitialize)
 #define CoIncrementMTAUsage (*pdyn_CoIncrementMTAUsage)
+#endif /* !CONFIG_WITHOUT_CP */
 
 
 /* User32 API. */
@@ -253,7 +261,9 @@ DEFINE_DYNAMIC_FUNCTION(HRESULT, STDAPICALLTYPE, DwmExtendFrameIntoClientArea, (
 		}                                                                                  \
 		return hResult;                                                                    \
 	}
+#ifndef CONFIG_WITHOUT_CP
 DEFINE_LAZY_LIBRARY_LOADER(pdyn_Ole32, DynApi_GetOld32Handle, L"OLE32", L"Ole32.dll");
+#endif /* !CONFIG_WITHOUT_CP */
 DEFINE_LAZY_LIBRARY_LOADER(pdyn_User32, DynApi_GetUser32Handle, L"USER32", L"User32.dll");
 DEFINE_LAZY_LIBRARY_LOADER(pdyn_DwmAPI, DynApi_GetDwmApiHandle, L"DWMAPI", L"dwmapi.dll");
 #undef DEFINE_LAZY_LIBRARY_LOADER
@@ -276,6 +286,7 @@ static FARPROC DynApi_GetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
 
 
 /* Ensure that the given API is available (returning `true' if it is, and `false' otherwise) */
+#ifndef CONFIG_WITHOUT_CP
 static bool DynApi_InitializeOld32(void) {
 	HMODULE hOle32 = DynApi_GetOld32Handle();
 	if (!hOle32)
@@ -288,6 +299,7 @@ static bool DynApi_InitializeOld32(void) {
 fail:
 	return false;
 }
+#endif /* !CONFIG_WITHOUT_CP */
 
 static bool DynApi_InitializeUser32(void) {
 	HMODULE hUser32 = DynApi_GetUser32Handle();
@@ -337,6 +349,7 @@ fail:
 /************************************************************************/
 /* System settings helper functions                                     */
 /************************************************************************/
+#ifndef CONFIG_WITHOUT_CP
 #define _DISPLAY_BRIGHTNESS _real__DISPLAY_BRIGHTNESS
 #define DISPLAY_BRIGHTNESS  _real_DISPLAY_BRIGHTNESS
 #define PDISPLAY_BRIGHTNESS _real_PDISPLAY_BRIGHTNESS
@@ -500,8 +513,14 @@ static IAudioEndpointVolume *SysIntern_VolumeControllerAcquire(void) {
 		LOGERROR_PTR("IMMDeviceEnumerator::GetDefaultAudioEndpoint()", hr);
 		goto err2;
 	}
-	hr = defaultDevice->lpVtbl->Activate(defaultDevice, &UUID_IAudioEndpointVolume,
-	                                     CLSCTX_INPROC_SERVER, NULL, (LPVOID *)&endpointVolume);
+	hr = defaultDevice->lpVtbl->Activate(defaultDevice,
+#ifdef __cplusplus
+	                                     UUID_IAudioEndpointVolume,
+#else /* __cplusplus */
+	                                     &UUID_IAudioEndpointVolume,
+#endif /* !__cplusplus */
+	                                     CLSCTX_INPROC_SERVER, NULL,
+	                                     (LPVOID *)&endpointVolume);
 	defaultDevice->lpVtbl->Release(defaultDevice);
 	if (FAILED(hr) || !endpointVolume) {
 		LOGERROR_PTR("IMMDevice::Activate()", hr);
@@ -1070,7 +1089,7 @@ static void Sys_SetWifiEnabled(bool enabled) {
 }
 
 
-/* TODO: CP_ELEM_TGL_ROTLOCK: Rotation lock
+/* CP_ELEM_TGL_ROTLOCK: Rotation lock
  *  - HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\AutoRotation\Enable
  *  - [DllImport("user32.dll", EntryPoint = "#2507")]
  *    extern static bool SetAutoRotationState(bool bEnable);
@@ -1119,6 +1138,7 @@ static void Sys_SetRotationEnabled(bool enabled) {
  */
 /* TODO: CP_ELEM_TGL_PWRSAVE:    Powersaving mode enable/disable */
 /* TODO: Battery state/levels:   powrprof.dll? (maybe)  */
+#endif /* !CONFIG_WITHOUT_CP */
 /************************************************************************/
 
 
@@ -1597,7 +1617,9 @@ static HWND WtgAppList_Next(HWND hWnd) {
 /************************************************************************/
 #define WTG_GESTURE_KIND_NONE       0 /* None / not determined */
 #define WTG_GESTURE_KIND_IGNORE     1 /* Ignored gesture */
+#if !defined(CONFIG_WITHOUT_CP) || !defined(CONFIG_WITHOUT_AS)
 #define WTG_GESTURE_KIND_VSWIPE_APP 2 /* Vertical swiping for applets */
+#endif /* !CONFIG_WITHOUT_CP || !CONFIG_WITHOUT_AS */
 #define WTG_GESTURE_KIND_ZOOM       3 /* Zoom or pinch */
 #define WTG_GESTURE_KIND_ZOOM_RSTOR 4 /* Zoom or pinch (for window restore) */
 #define WTG_GESTURE_KIND_VSWIPE     5 /* Vertical swiping */
@@ -1919,6 +1941,14 @@ static WtgGestureAnimation ga;
 /************************************************************************/
 /* Application switcher and control panel                               */
 /************************************************************************/
+#if !defined(CONFIG_WITHOUT_AS) || !defined(CONFIG_WITHOUT_CP)
+typedef struct {
+	UINT32       cat_pointerId; /* Hardware pointer ID. */
+	unsigned int cat_element;   /* Control element grabbed by this pointer. (one of `CP_ELEM_*') */
+	unsigned int cat_hover;     /* Control element being hovered over. (if any) */
+} WtgAppletTouchPoint;
+
+#ifndef CONFIG_WITHOUT_AS
 typedef struct {
 	bool  as_active; /* [lock(WRITE_ONCE)] Applet is active */
 	HWND  as_window; /* [lock(WRITE_ONCE)][0..1] Application switcher window. */
@@ -1933,7 +1963,9 @@ static void WtgAppSwitcherApplet_Fini(WtgAppSwitcherApplet *__restrict self) {
 		DestroyWindow(self->as_window);
 	memset(self, 0, sizeof(*self));
 }
+#endif /* !CONFIG_WITHOUT_AS */
 
+#ifndef CONFIG_WITHOUT_CP
 #define CP_ELEM_NONE           ((unsigned int)-1) /* No element */
 #define CP_ELEM_BRIGHTNESS     0 /* Brightness slider */
 #define CP_ELEM_VOLUME         1 /* Volume slider */
@@ -1953,12 +1985,6 @@ static void WtgAppSwitcherApplet_Fini(WtgAppSwitcherApplet *__restrict self) {
 
 #define CP_BUTTON_WIDTH  115 /* TODO: DPI scaling? */
 #define CP_BUTTON_HEIGHT 85  /* TODO: DPI scaling? */
-
-typedef struct {
-	UINT32       cat_pointerId; /* Hardware pointer ID. */
-	unsigned int cat_element;   /* Control element grabbed by this pointer. (one of `CP_ELEM_*') */
-	unsigned int cat_hover;     /* Control element being hovered over. (if any) */
-} WtgAppletTouchPoint;
 
 typedef struct {
 	bool                cp_active;  /* [lock(WRITE_ONCE)] Applet is active */
@@ -2063,14 +2089,21 @@ WtgControlPanelApplet_IsHover(WtgControlPanelApplet *__restrict self,
 	}
 	return false;
 }
+#endif /* !CONFIG_WITHOUT_CP */
+
 
 /* Applet instances */
+#ifndef CONFIG_WITHOUT_AS
 static WtgAppSwitcherApplet as; /* Application switcher. */
+#endif /* !CONFIG_WITHOUT_AS */
+#ifndef CONFIG_WITHOUT_CP
 static WtgControlPanelApplet cp; /* Control panel. */
+#endif /* !CONFIG_WITHOUT_CP */
 
 
 /* GUI elements (from gui/gui.c)
  * NOTE: All of these using BGRA byte order! */
+#ifndef CONFIG_WITHOUT_CP
 extern uint8_t const gui_cp_l[32][1][4];
 extern uint8_t const gui_cp_c[1][1][4];
 extern uint8_t const gui_cp_r[32][1][4];
@@ -2081,6 +2114,7 @@ extern uint8_t const gui_cp_wifi[64][64][4];
 extern uint8_t const gui_cp_bth[32][64][4];
 extern uint8_t const gui_cp_nlck[64][64][4];
 extern uint8_t const gui_cp_rlck[64][64][4];
+#endif /* !CONFIG_WITHOUT_CP */
 #define GUI_RGBA(r, g, b, a) /* XXX: Byteorder??? */ \
 	((UINT32)(b) | ((UINT32)(g) << 8) | ((UINT32)(r) << 16) | ((UINT32)(a) << 24))
 
@@ -2100,12 +2134,6 @@ static void Wtg_PerPixelCopy(void *dst, void const *src,
 		src = (BYTE *)src + (src_stride * 4);
 		--h;
 	}
-}
-
-static void Wtg_PerPixelBlit(UINT32 *image, size_t x, size_t y,
-                             void const *src, size_t w, size_t h) {
-	Wtg_PerPixelCopy(image + x + (y * cp.cp_size.x),
-	                 src, w, h, cp.cp_size.x, w);
 }
 
 #if 0 /*< Define as 1 to have the blender round upwards. */
@@ -2167,6 +2195,12 @@ static void Wtg_PerPixelBlend(void *dst, void const *src,
 }
 
 
+#ifndef CONFIG_WITHOUT_CP
+static void WtgControlPanel_PerPixelBlit(UINT32 *image, size_t x, size_t y,
+                                         void const *src, size_t w, size_t h) {
+	Wtg_PerPixelCopy(image + x + (y * cp.cp_size.x),
+	                 src, w, h, cp.cp_size.x, w);
+}
 static bool WtgControlPanel_IsSliderVertical(unsigned int elem) {
 	LONG w, h;
 	w = RC_WIDTH(cp.cp_elems[elem]);
@@ -2391,8 +2425,8 @@ static void WtgControlPanel_Draw(HDC hdc, UINT32 *image) {
 			memcpy((BYTE *)&scanline[w] - sizeof(gui_cp_r), gui_cp_r, sizeof(gui_cp_r));
 		}
 	}
-	Wtg_PerPixelBlit(image, 0, h - CP_BORDER, gui_cp_bl, CP_BORDER, CP_BORDER);
-	Wtg_PerPixelBlit(image, w - CP_BORDER, h - CP_BORDER, gui_cp_br, CP_BORDER, CP_BORDER);
+	WtgControlPanel_PerPixelBlit(image, 0, h - CP_BORDER, gui_cp_bl, CP_BORDER, CP_BORDER);
+	WtgControlPanel_PerPixelBlit(image, w - CP_BORDER, h - CP_BORDER, gui_cp_br, CP_BORDER, CP_BORDER);
 	for (y = 0; y < CP_BORDER; ++y) {
 		UINT32 color, *scanline = &image[((h - CP_BORDER) + y) * w];
 		memcpy(&color, gui_cp_b[0][y], 4);
@@ -2889,7 +2923,7 @@ static bool WtgControlPanel_RegisterWindowClass(void) {
 	WindowClassEx.lpfnWndProc   = &WtgControlPanel_WndProc;
 	WindowClassEx.hInstance     = hApplicationInstance;
 	WindowClassEx.lpszClassName = APPLET_CP_CLASSNAME;
-	WindowClassEx.hCursor       = LoadCursorA(NULL, IDC_ARROW);
+	WindowClassEx.hCursor       = LoadCursorA(NULL, (LPCSTR)IDC_ARROW);
 	applet_cp_class             = RegisterClassExW(&WindowClassEx);
 	return applet_cp_class != 0;
 }
@@ -2941,15 +2975,6 @@ static HWND WtgControlPanel_GetOrCreateWindow(void) {
 	return cp.cp_window;
 }
 
-
-/* Called when a vertical swipe gesture is started
- * @return: true:  Init ok
- * @return: false: Init failed (ignore the gesture) */
-static bool WtgApplet_Init(void) {
-	debug_printf("WtgApplet_Init()\n");
-	return true;
-}
-
 static void WtgControlPanel_SetAnim(double visibility) {
 	double yMax;
 	LONG yPos; /* Y-position of bottom window border */
@@ -2977,11 +3002,21 @@ static void WtgControlPanel_SetAnim(double visibility) {
 		WtgGestureAnimation_SetBlur(&ga, visibility);
 	}
 }
+#endif /* !CONFIG_WITHOUT_CP */
 
+
+/* Called when a vertical swipe gesture is started
+ * @return: true:  Init ok
+ * @return: false: Init failed (ignore the gesture) */
+static bool WtgApplet_Init(void) {
+	debug_printf("WtgApplet_Init()\n");
+	return true;
+}
 
 /* Called to update the enter/exit animation of applets.
  * Called every time from `WtgGesture_Update()' */
 static void WtgApplet_Show(void) {
+#ifndef CONFIG_WITHOUT_CP
 	if (cp.cp_active || ga.ga_dist > 0.0) {
 		if (WtgControlPanel_GetOrCreateWindow() != NULL) {
 			double yMax, visibility;
@@ -2994,16 +3029,25 @@ static void WtgApplet_Show(void) {
 			}
 			WtgControlPanel_SetAnim(visibility);
 		}
+#ifndef CONFIG_WITHOUT_AS
 		if (!as.as_active && as.as_window != NULL) {
 			if (!SetLayeredWindowAttributes(as.as_window, 0, 0, LWA_ALPHA))
 				LOGERROR_GLE("SetLayeredWindowAttributes()");
 		}
+#endif /* !CONFIG_WITHOUT_AS */
 		return;
 	}
 	if (cp.cp_window != NULL)
 		WtgControlPanel_SetAnim(0.0);
-	/* TODO: Application switcher animation */
+#endif /* !CONFIG_WITHOUT_CP */
+#ifdef CONFIG_WITHOUT_AS
 	WtgGestureAnimation_SetBlur(&ga, 0.0);
+#else /* CONFIG_WITHOUT_AS */
+
+	/* TODO: Application switcher animation */
+
+	WtgGestureAnimation_SetBlur(&ga, 0.0);
+#endif /* !CONFIG_WITHOUT_AS */
 }
 
 /* Called when a vertical swipe gesture is finished
@@ -3016,6 +3060,7 @@ static bool WtgApplet_Done(void) {
 	debug_printf("WtgApplet_Done(%f) [dist2:%f]\n", ga.ga_dist, ga.ga_dist2);
 
 	/* Control panel... */
+#ifndef CONFIG_WITHOUT_CP
 	{
 		double yMax, dist = ga.ga_dist;
 		yMax = (double)(cp.cp_size.y - cp.cp_client.top);
@@ -3037,24 +3082,40 @@ static bool WtgApplet_Done(void) {
 				WtgControlPanelApplet_Fini(&cp);
 				result = true;
 				goto done_after_cp;
+#define NEED_done_after_cp
 			}
 			/* The control panel overlays the app switcher,
 			 * so if the panel is active, don't given the
 			 * switcher a chance at doing anything! */
 			WtgControlPanel_SetAnim(1.0);
 			goto done;
+#define NEED_done
 		}
 	}
+#endif /* !CONFIG_WITHOUT_CP */
+
 	/* TODO: Application switcher */
 
+
+#ifdef NEED_done
+#undef NEED_done
 done:
+#endif /* NEED_done */
+#ifndef CONFIG_WITHOUT_CP
 	if (!cp.cp_active)
 		WtgControlPanelApplet_Fini(&cp);
+#endif /* !CONFIG_WITHOUT_CP */
+#ifdef NEED_done_after_cp
+#undef NEED_done_after_cp
 done_after_cp:
+#endif /* NEED_done_after_cp */
+#ifndef CONFIG_WITHOUT_AS
 	if (!as.as_active)
 		WtgAppSwitcherApplet_Fini(&as);
+#endif /* !CONFIG_WITHOUT_AS */
 	return result;
 }
+#endif /* !CONFIG_WITHOUT_AS || !CONFIG_WITHOUT_CP */
 /************************************************************************/
 
 
@@ -3082,8 +3143,14 @@ WtgGestureAnimation_SetBlur(WtgGestureAnimation *__restrict self,
 	if (self->ga_blurold == strength)
 		return; /* Unchanged */
 	/* Don't include additional blur effects when one of these is active! */
-	if (cp.cp_active || as.as_active)
+#ifndef CONFIG_WITHOUT_CP
+	if (cp.cp_active)
 		return;
+#endif /* !CONFIG_WITHOUT_CP */
+#ifndef CONFIG_WITHOUT_AS
+	if (as.as_active)
+		return;
+#endif /* !CONFIG_WITHOUT_AS */
 	if (!self->ga_blurlay) {
 		self->ga_blurlay = WtgGestureAnimation_CreateBlurWindow(self);
 		if (!self->ga_blurlay)
@@ -3252,14 +3319,22 @@ static void WtgGesture_Update(void) {
 			/* Gesture started. */
 			animwin      = ga.ga_fgwin;
 			animwin_kind = ga.ga_fgkind;
-			if (animwin != NULL && (animwin == as.as_window ||
+#if !defined(CONFIG_WITHOUT_CP) || !defined(CONFIG_WITHOUT_AS)
+			if (animwin != NULL && (0 ||
+#ifndef CONFIG_WITHOUT_AS
+				                    animwin == as.as_window ||
+#endif /* !CONFIG_WITHOUT_AS */
+#ifndef CONFIG_WITHOUT_CP
 			                        animwin == cp.cp_window ||
-			                        animwin == cp.cp_wrapper)) {
+			                        animwin == cp.cp_wrapper ||
+#endif /* !CONFIG_WITHOUT_CP */
+			                        0)) {
 				if (ga.ga_kind != WTG_GESTURE_KIND_VSWIPE)
 					goto ignore_gesture;
 				ga.ga_kind = WTG_GESTURE_KIND_VSWIPE_APP;
 				goto after_anim_init;
 			}
+#endif /* !CONFIG_WITHOUT_CP || !CONFIG_WITHOUT_AS */
 			if (animwin_kind == WTG_WINDOW_KIND_DESKTOP &&
 			    ga.ga_kind == WTG_GESTURE_KIND_ZOOM &&
 			    last_minimized_window != NULL) {
@@ -3284,6 +3359,7 @@ static void WtgGesture_Update(void) {
 					}
 				}
 			}
+#if !defined(CONFIG_WITHOUT_CP) || !defined(CONFIG_WITHOUT_AS)
 			if (ga.ga_kind == WTG_GESTURE_KIND_VSWIPE &&
 			    (animwin_kind == WTG_WINDOW_KIND_DESKTOP ||
 			     animwin_kind == WTG_WINDOW_KIND_MAXIMIZED)) {
@@ -3292,7 +3368,9 @@ static void WtgGesture_Update(void) {
 				if (!WtgApplet_Init())
 					goto ignore_gesture;
 				goto do_update_gesture_initial;
+#define NEED_do_update_gesture_initial
 			}
+#endif /* !CONFIG_WITHOUT_CP || !CONFIG_WITHOUT_AS */
 			if (animwin != NULL &&
 			    WtgAnimatedWindow_Init(&ga.ga_anim, animwin, ga.ga_overlay,
 			                           animwin_kind, TRUE)) {
@@ -3331,7 +3409,10 @@ after_anim_init:
 				}
 			}
 			/* Update the gesture for the first time. */
+#ifdef NEED_do_update_gesture_initial
+#undef NEED_do_update_gesture_initial
 do_update_gesture_initial:
+#endif /* NEED_do_update_gesture_initial */
 			if (WTG_GESTURE_KIND_VALID(ga.ga_kind)) {
 				size_t i;
 				for (i = 0; i < gesture_count; ++i) {
@@ -3349,11 +3430,13 @@ do_update_gesture_initial:
 do_update_gesture:
 		switch (ga.ga_kind) {
 
+#if !defined(CONFIG_WITHOUT_CP) || !defined(CONFIG_WITHOUT_AS)
 		case WTG_GESTURE_KIND_VSWIPE_APP:
 			ga.ga_dist  += WtgGesture_CalculateVDelta();
 			ga.ga_dist2 += WtgGesture_CalculateHDelta();
 			WtgApplet_Show();
 			return;
+#endif /* !CONFIG_WITHOUT_CP || !CONFIG_WITHOUT_AS */
 
 		case WTG_GESTURE_KIND_ZOOM:
 		case WTG_GESTURE_KIND_ZOOM_RSTOR: {
@@ -3671,12 +3754,15 @@ static bool WtgGesture_Finish(void) {
 		/* Perform the action indicated by the current motion */
 		switch (ga.ga_kind) {
 
+#if !defined(CONFIG_WITHOUT_CP) || !defined(CONFIG_WITHOUT_AS)
 		case WTG_GESTURE_KIND_VSWIPE_APP:
 			if (WtgApplet_Done()) {
 				WtgTouchInfo_CancelInputs();
 				goto success;
 			}
 			goto failed;
+#define NEED_failed
+#endif /* !CONFIG_WITHOUT_CP || !CONFIG_WITHOUT_AS */
 
 		case WTG_GESTURE_KIND_ZOOM_RSTOR:
 			if (ga.ga_dist >= WTG_GESTURE_ZOOM_COMMIT_THRESHOLD) {
@@ -3803,7 +3889,10 @@ static bool WtgGesture_Finish(void) {
 		SetActiveWindow(ga.ga_anim.wa_animwin);
 		ga.ga_kind = WTG_GESTURE_KIND_IGNORE;
 	}
+#ifdef NEED_failed
+#undef NEED_failed
 failed:
+#endif /* NEED_failed */
 	WtgGestureAnimation_Fini(&ga);
 	return false;
 success:
