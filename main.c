@@ -206,12 +206,18 @@ DEFINE_DYNAMIC_FUNCTION(BOOL, WINAPI, InjectTouchInput, (UINT32 count, POINTER_T
 DEFINE_DYNAMIC_FUNCTION(BOOL, WINAPI, InitializeTouchInjection, (UINT32 maxCount, DWORD dwMode));
 DEFINE_DYNAMIC_FUNCTION(BOOL, WINAPI, GetPointerTouchInfo, (UINT32 pointerId, POINTER_TOUCH_INFO *touchInfo));
 DEFINE_DYNAMIC_FUNCTION(BOOL, WINAPI, SetWindowCompositionAttribute, (HWND hwnd, WINCOMPATTRDATA *pAttrData));
+#undef AR_ENABLED
+#define AR_ENABLED 0x0
+DEFINE_DYNAMIC_FUNCTION(BOOL, WINAPI, GetAutoRotationState, (int *pState));
+DEFINE_DYNAMIC_FUNCTION(BOOL, WINAPI, SetAutoRotationState, (BOOL bEnabled));
 #define RegisterPointerInputTarget    (*pdyn_RegisterPointerInputTarget)
 #define RegisterTouchWindow           (*pdyn_RegisterTouchWindow)
 #define InjectTouchInput              (*pdyn_InjectTouchInput)
 #define InitializeTouchInjection      (*pdyn_InitializeTouchInjection)
 #define GetPointerTouchInfo           (*pdyn_GetPointerTouchInfo)
 #define SetWindowCompositionAttribute (*pdyn_SetWindowCompositionAttribute)
+#define GetAutoRotationState          (*pdyn_GetAutoRotationState)
+#define SetAutoRotationState          (*pdyn_SetAutoRotationState)
 
 /* DWM API. */
 DEFINE_DYNAMIC_FUNCTION(HRESULT, STDAPICALLTYPE, DwmRegisterThumbnail, (HWND hwndDestination, HWND hwndSource, PHTHUMBNAIL phThumbnailId));
@@ -293,6 +299,11 @@ static bool DynApi_InitializeUser32(void) {
 	DynApi_LoadFunction(hUser32, InitializeTouchInjection);
 	DynApi_LoadFunction(hUser32, GetPointerTouchInfo);
 	DynApi_TryLoadFunction(hUser32, SetWindowCompositionAttribute);
+	DynApi_TryLoadFunction(hUser32, GetAutoRotationState);
+	/* https://social.msdn.microsoft.com/Forums/en-US/f9cd061b-ce33-4376-9114-f4f783a3bde3/how-do-i-turn-onoff-autorotation-by-code */
+	pdyn_SetAutoRotationState = (LPSetAutoRotationState)GetProcAddress(hUser32, (LPCSTR)2507);
+	if (!pdyn_SetAutoRotationState)
+		Wtg_WarnMissingShLibFunction(hUser32, "SetAutoRotationState#2507");
 	return true;
 fail:
 	return false;
@@ -1064,6 +1075,39 @@ static void Sys_SetWifiEnabled(bool enabled) {
  *  - [DllImport("user32.dll", EntryPoint = "#2507")]
  *    extern static bool SetAutoRotationState(bool bEnable);
  * Source: https://social.msdn.microsoft.com/Forums/en-US/f9cd061b-ce33-4376-9114-f4f783a3bde3/how-do-i-turn-onoff-autorotation-by-code */
+static bool SysIntern_GetRotationEnabled(void) {
+	int arState;
+	if (pdyn_GetAutoRotationState) {
+		if (GetAutoRotationState(&arState))
+			return arState == AR_ENABLED;
+		LOGERROR_GLE("GetAutoRotationState()");
+	}
+	/* TODO: Fallback to reading "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\AutoRotation\Enable" */
+	return false;
+}
+
+static void SysIntern_SetRotationEnabled(bool enabled) {
+	if (pdyn_SetAutoRotationState) {
+		if ((*pdyn_SetAutoRotationState)(enabled))
+			return;
+		LOGERROR_GLE("SetAutoRotationState()");
+	}
+	/* TODO: Fallback to writing "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\AutoRotation\Enable" */
+}
+
+static int last_system_rotation_enabled = -1;
+static bool Sys_GetRotationEnabled(void) {
+	if (last_system_rotation_enabled < 0)
+		last_system_rotation_enabled = SysIntern_GetRotationEnabled();
+	return last_system_rotation_enabled > 0;
+}
+static void Sys_SetRotationEnabled(bool enabled) {
+	if (last_system_rotation_enabled == enabled)
+		return;
+	SysIntern_SetRotationEnabled(enabled);
+	last_system_rotation_enabled = enabled;
+}
+
 
 /* TODO: CP_ELEM_TGL_NIGHTMODE: Night mode
  *  - HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\Cache\DefaultAccount\$$windows.data.bluelightreduction.bluelightreductionstate\Current
@@ -2035,6 +2079,8 @@ extern uint8_t const gui_cp_b[1][32][4];
 extern uint8_t const gui_cp_br[32][32][4];
 extern uint8_t const gui_cp_wifi[64][64][4];
 extern uint8_t const gui_cp_bth[32][64][4];
+extern uint8_t const gui_cp_nlck[64][64][4];
+extern uint8_t const gui_cp_rlck[64][64][4];
 #define GUI_RGBA(r, g, b, a) /* XXX: Byteorder??? */ \
 	((UINT32)(b) | ((UINT32)(g) << 8) | ((UINT32)(r) << 16) | ((UINT32)(a) << 24))
 
@@ -2299,6 +2345,28 @@ WtgControlPanel_DrawElement(HDC hdc, UINT32 *base, unsigned int elem,
 		}
 	}	break;
 
+	case CP_ELEM_TGL_ROTLOCK: {
+		void const *icon = gui_cp_rlck;
+		if (Sys_GetRotationEnabled()) {
+			icon = gui_cp_nlck;
+			for (y = 1; y < h - 1; ++y) {
+				for (x = 1; x < w - 1; ++x) {
+					PIXEL(x, y) = GUI_RGBA(0x78, 0xdb, 0x61, 0xff);
+				}
+			}
+		}
+		if (w >= GUI_WIDTH(gui_cp_rlck) &&
+		    h >= GUI_HEIGHT(gui_cp_rlck)) {
+			LONG x, y;
+			x = (w - GUI_WIDTH(gui_cp_rlck)) / 2;
+			y = (h - GUI_HEIGHT(gui_cp_rlck)) / 2;
+			Wtg_PerPixelBlend(&PIXEL(x, y), icon,
+			                  GUI_WIDTH(gui_cp_rlck),
+			                  GUI_HEIGHT(gui_cp_rlck), stride,
+			                  GUI_WIDTH(gui_cp_rlck));
+		}
+	}	break;
+
 	default:
 		break;
 	}
@@ -2457,11 +2525,14 @@ static bool WtgControlPanel_ClickElem(unsigned int elem) {
 		Sys_SetBluetoothEnabled(!Sys_GetBluetoothEnabled());
 		return true;
 
+	case CP_ELEM_TGL_ROTLOCK:
+		Sys_SetRotationEnabled(!Sys_GetRotationEnabled());
+		return true;
+
 	default:
 		break;
 	}
 
-	// TODO: CP_ELEM_TGL_ROTLOCK
 	// TODO: CP_ELEM_TGL_FLIGHTMODE
 	// TODO: CP_ELEM_TGL_NIGHTMODE
 	// TODO: CP_ELEM_TGL_PWRSAVE
@@ -2553,6 +2624,71 @@ static bool WtgControlPanel_OnPointerMove(UINT32 pointerId, LONG x, LONG y, BOOL
 		}
 	}
 	return true;
+}
+
+static void WtgControlPanel_PlaceElements(void) {
+	RECT lQuarter, mHalf, rQuarter;
+	LONG buttonRows, buttonCols;
+	unsigned int i;
+	double button_w, button_h;
+
+	lQuarter.top    = cp.cp_client.top;
+	lQuarter.left   = cp.cp_client.left;
+	lQuarter.right  = cp.cp_client.left + (RC_WIDTH(cp.cp_client) / 4);
+	lQuarter.bottom = cp.cp_client.bottom;
+	rQuarter.top    = cp.cp_client.top;
+	rQuarter.left   = cp.cp_client.right - (RC_WIDTH(cp.cp_client) / 4);
+	rQuarter.right  = cp.cp_client.right;
+	rQuarter.bottom = cp.cp_client.bottom;
+	mHalf.top       = cp.cp_client.top;
+	mHalf.left      = lQuarter.right;
+	mHalf.right     = rQuarter.left;
+	mHalf.bottom    = cp.cp_client.bottom;
+
+	{
+		LONG rQuarterW, rQuarterH;
+		rQuarterW = RC_WIDTH(rQuarter);
+		rQuarterH = RC_HEIGHT(rQuarter);
+		if (rQuarterW >= rQuarterH) {
+			/* Horizontal sliders */
+			cp.cp_elems[CP_ELEM_BRIGHTNESS]        = rQuarter;
+			cp.cp_elems[CP_ELEM_BRIGHTNESS].bottom = rQuarter.top + (rQuarterH / 2);
+			cp.cp_elems[CP_ELEM_VOLUME]            = rQuarter;
+			cp.cp_elems[CP_ELEM_VOLUME].top        = cp.cp_elems[CP_ELEM_BRIGHTNESS].bottom;
+		} else {
+			/* Vertical sliders */
+			cp.cp_elems[CP_ELEM_BRIGHTNESS]       = rQuarter;
+			cp.cp_elems[CP_ELEM_BRIGHTNESS].right = rQuarter.left + (rQuarterW / 2);
+			cp.cp_elems[CP_ELEM_VOLUME]           = rQuarter;
+			cp.cp_elems[CP_ELEM_VOLUME].left      = cp.cp_elems[CP_ELEM_BRIGHTNESS].right;
+		}
+	}
+	cp.cp_elems[CP_ELEM_CLK_BATTERY] = lQuarter;
+
+	buttonCols = RC_WIDTH(mHalf) / CP_BUTTON_WIDTH;
+	buttonRows = RC_HEIGHT(mHalf) / CP_BUTTON_HEIGHT;
+
+	if (buttonCols <= 0 || buttonRows <= 0)
+		return; /* Cannot place any buttons... :( */
+	button_w = (double)RC_WIDTH(mHalf) / (double)buttonCols;
+	button_h = (double)RC_HEIGHT(mHalf) / (double)buttonRows;
+	for (i = CP_ELEM_BUTTONS_FIRST; i <= CP_ELEM_BUTTONS_LAST; ++i) {
+		LONG grid_x, grid_y;
+		LONG button_center_x, button_center_y;
+		grid_x = (i - CP_ELEM_BUTTONS_FIRST) % buttonCols;
+		grid_y = (i - CP_ELEM_BUTTONS_FIRST) / buttonCols;
+		if (grid_y >= buttonRows) {
+			/* XXX: If this every becomes an issue, maybe implement scrolling? */
+			break; /* Out of bounds... :( */
+		}
+		grid_x = (buttonCols - 1) - grid_x; /* Start from the right */
+		button_center_x = mHalf.left + (LONG)((button_w * grid_x) + (button_w / 2.0));
+		button_center_y = mHalf.top  + (LONG)((button_h * grid_y) + (button_h / 2.0));
+		cp.cp_elems[i].left   = button_center_x - (CP_BUTTON_WIDTH / 2);
+		cp.cp_elems[i].top    = button_center_y - (CP_BUTTON_HEIGHT / 2);
+		cp.cp_elems[i].right  = cp.cp_elems[i].left + CP_BUTTON_WIDTH;
+		cp.cp_elems[i].bottom = cp.cp_elems[i].top + CP_BUTTON_HEIGHT;
+	}
 }
 
 static LRESULT WINAPI /* For the control-panel window */
@@ -2664,74 +2800,82 @@ WtgControlPanel_WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 		return 0;
 	}	break;
 
+	case WM_DISPLAYCHANGE: {
+		MONITORINFO mi;
+		HMONITOR hMon;
+		hMon = MonitorFromWindow(cp.cp_window, MONITOR_DEFAULTTOPRIMARY);
+		if (!hMon) {
+			LOGERROR_GLE("MonitorFromWindow()");
+			break;
+		}
+		mi.cbSize = sizeof(mi);
+		if (!GetMonitorInfoW(hMon, &mi)) {
+			LOGERROR_GLE("GetMonitorInfoW()");
+			break;
+		}
+		/* Construct the gesture overlay window. */
+		ga.ga_overpos.x = mi.rcWork.left;
+		ga.ga_overpos.y = mi.rcWork.top;
+		ga.ga_oversiz.x = RC_WIDTH(mi.rcWork);
+		ga.ga_oversiz.y = RC_HEIGHT(mi.rcWork);
+
+		if (ga.ga_overlay != NULL) {
+			SetWindowPos(ga.ga_overlay, NULL,
+			             ga.ga_overpos.x, ga.ga_overpos.y,
+			             ga.ga_oversiz.x, ga.ga_oversiz.y,
+			             SWP_NOACTIVATE | SWP_NOZORDER |
+			             SWP_NOCOPYBITS | SWP_NOOWNERZORDER |
+			             SWP_NOSENDCHANGING);
+		}
+		if (ga.ga_blurlay != NULL) {
+			SetWindowPos(ga.ga_blurlay, NULL,
+			             ga.ga_overpos.x, ga.ga_overpos.y,
+			             ga.ga_oversiz.x, ga.ga_oversiz.y,
+			             SWP_NOACTIVATE | SWP_NOZORDER |
+			             SWP_NOCOPYBITS | SWP_NOOWNERZORDER |
+			             SWP_NOSENDCHANGING);
+		}
+		if (cp.cp_blur != NULL) {
+			SetWindowPos(cp.cp_blur, NULL,
+			             ga.ga_overpos.x, ga.ga_overpos.y,
+			             ga.ga_oversiz.x, ga.ga_oversiz.y,
+			             SWP_NOACTIVATE | SWP_NOZORDER |
+			             SWP_NOCOPYBITS | SWP_NOOWNERZORDER |
+			             SWP_NOSENDCHANGING);
+		}
+		/* Recalculate CP size */
+		cp.cp_size.x = ga.ga_oversiz.x - (ga.ga_oversiz.x / 10);
+		cp.cp_size.y = ga.ga_oversiz.y / 5;
+		cp.cp_pos.x  = ga.ga_overpos.x + ((ga.ga_oversiz.x - cp.cp_size.x) / 2);
+		cp.cp_pos.y  = ga.ga_overpos.y;
+
+		/* Recalculate CP client area */
+		cp.cp_client.left   = CP_BORDER;
+		cp.cp_client.right  = cp.cp_size.x - CP_BORDER;
+		cp.cp_client.top    = cp.cp_size.y;
+		cp.cp_size.y        = cp.cp_size.y * 2;
+		cp.cp_client.bottom = cp.cp_size.y - CP_BORDER;
+
+		/* Move the CP to the proper position (and size) */
+		SetWindowPos(cp.cp_window, NULL,
+		             cp.cp_pos.x, cp.cp_pos.y - cp.cp_client.top,
+		             cp.cp_size.x, cp.cp_size.y,
+		             SWP_NOACTIVATE | SWP_NOZORDER |
+		             SWP_NOCOPYBITS | SWP_NOOWNERZORDER |
+		             SWP_NOSENDCHANGING);
+
+		/* Calculate new positions for CP elements */
+		memset(cp.cp_elems, 0, sizeof(cp.cp_elems));
+		WtgControlPanel_PlaceElements();
+
+		/* Re-draw the CP */
+		WtgControlPanel_Redraw();
+		return 0;
+	}	break;
+
 	default: break;
 	}
 	return DefWindowProcW(hWnd, msg, wParam, lParam);
-}
-
-static void WtgControlPanel_PlaceElements(void) {
-	RECT lQuarter, mHalf, rQuarter;
-	LONG buttonRows, buttonCols;
-	unsigned int i;
-	double button_w, button_h;
-
-	lQuarter.top    = cp.cp_client.top;
-	lQuarter.left   = cp.cp_client.left;
-	lQuarter.right  = cp.cp_client.left + (RC_WIDTH(cp.cp_client) / 4);
-	lQuarter.bottom = cp.cp_client.bottom;
-	rQuarter.top    = cp.cp_client.top;
-	rQuarter.left   = cp.cp_client.right - (RC_WIDTH(cp.cp_client) / 4);
-	rQuarter.right  = cp.cp_client.right;
-	rQuarter.bottom = cp.cp_client.bottom;
-	mHalf.top       = cp.cp_client.top;
-	mHalf.left      = lQuarter.right;
-	mHalf.right     = rQuarter.left;
-	mHalf.bottom    = cp.cp_client.bottom;
-
-	{
-		LONG rQuarterW, rQuarterH;
-		rQuarterW = RC_WIDTH(rQuarter);
-		rQuarterH = RC_HEIGHT(rQuarter);
-		if (rQuarterW >= rQuarterH) {
-			/* Horizontal sliders */
-			cp.cp_elems[CP_ELEM_BRIGHTNESS]        = rQuarter;
-			cp.cp_elems[CP_ELEM_BRIGHTNESS].bottom = rQuarter.top + (rQuarterH / 2);
-			cp.cp_elems[CP_ELEM_VOLUME]            = rQuarter;
-			cp.cp_elems[CP_ELEM_VOLUME].top        = cp.cp_elems[CP_ELEM_BRIGHTNESS].bottom;
-		} else {
-			/* Vertical sliders */
-			cp.cp_elems[CP_ELEM_BRIGHTNESS]       = rQuarter;
-			cp.cp_elems[CP_ELEM_BRIGHTNESS].right = rQuarter.left + (rQuarterW / 2);
-			cp.cp_elems[CP_ELEM_VOLUME]           = rQuarter;
-			cp.cp_elems[CP_ELEM_VOLUME].left      = cp.cp_elems[CP_ELEM_BRIGHTNESS].right;
-		}
-	}
-	cp.cp_elems[CP_ELEM_CLK_BATTERY] = lQuarter;
-
-	buttonCols = RC_WIDTH(mHalf) / CP_BUTTON_WIDTH;
-	buttonRows = RC_HEIGHT(mHalf) / CP_BUTTON_HEIGHT;
-
-	if (buttonCols <= 0 || buttonRows <= 0)
-		return; /* Cannot place any buttons... :( */
-	button_w = (double)RC_WIDTH(mHalf) / (double)buttonCols;
-	button_h = (double)RC_HEIGHT(mHalf) / (double)buttonRows;
-	for (i = CP_ELEM_BUTTONS_FIRST; i <= CP_ELEM_BUTTONS_LAST; ++i) {
-		LONG grid_x, grid_y;
-		LONG button_center_x, button_center_y;
-		grid_x = (i - CP_ELEM_BUTTONS_FIRST) % buttonCols;
-		grid_y = (i - CP_ELEM_BUTTONS_FIRST) / buttonCols;
-		if (grid_y >= buttonRows) {
-			/* XXX: If this every becomes an issue, maybe implement scrolling? */
-			break; /* Out of bounds... :( */
-		}
-		grid_x = (buttonCols - 1) - grid_x; /* Start from the right */
-		button_center_x = mHalf.left + (LONG)((button_w * grid_x) + (button_w / 2.0));
-		button_center_y = mHalf.top  + (LONG)((button_h * grid_y) + (button_h / 2.0));
-		cp.cp_elems[i].left   = button_center_x - (CP_BUTTON_WIDTH / 2);
-		cp.cp_elems[i].top    = button_center_y - (CP_BUTTON_HEIGHT / 2);
-		cp.cp_elems[i].right  = cp.cp_elems[i].left + CP_BUTTON_WIDTH;
-		cp.cp_elems[i].bottom = cp.cp_elems[i].top + CP_BUTTON_HEIGHT;
-	}
 }
 
 #define APPLET_CP_CLASSNAME L"ControlPanel"
@@ -2755,10 +2899,10 @@ static HWND WtgControlPanel_GetOrCreateWindow(void) {
 		if (!WtgControlPanel_RegisterWindowClass())
 			return NULL;
 		memset(&cp, 0, sizeof(cp));
-		cp.cp_size.x = ga.ga_oversiz.x - (ga.ga_oversiz.x / 10);
-		cp.cp_size.y = ga.ga_oversiz.y / 5;
-		cp.cp_pos.x  = ga.ga_overpos.x + ((ga.ga_oversiz.x - cp.cp_size.x) / 2);
-		cp.cp_pos.y  = ga.ga_overpos.y;
+		cp.cp_size.x        = ga.ga_oversiz.x - (ga.ga_oversiz.x / 10);
+		cp.cp_size.y        = ga.ga_oversiz.y / 5;
+		cp.cp_pos.x         = ga.ga_overpos.x + ((ga.ga_oversiz.x - cp.cp_size.x) / 2);
+		cp.cp_pos.y         = ga.ga_overpos.y;
 		cp.cp_client.left   = CP_BORDER;
 		cp.cp_client.right  = cp.cp_size.x - CP_BORDER;
 		cp.cp_client.top    = cp.cp_size.y;
@@ -2822,7 +2966,7 @@ static void WtgControlPanel_SetAnim(double visibility) {
 		visibility = 1.0;
 	SetWindowPos(cp.cp_window, NULL,
 	             cp.cp_pos.x,
-	             cp.cp_pos.y + (yPos - cp.cp_size.y), 0 ,0 ,
+	             cp.cp_pos.y + (yPos - cp.cp_size.y), 0, 0,
 	             SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER |
 	             SWP_NOCOPYBITS | SWP_NOOWNERZORDER |
 	             SWP_NOSENDCHANGING);
@@ -3151,7 +3295,7 @@ static void WtgGesture_Update(void) {
 			}
 			if (animwin != NULL &&
 			    WtgAnimatedWindow_Init(&ga.ga_anim, animwin, ga.ga_overlay,
-			                     animwin_kind, TRUE)) {
+			                           animwin_kind, TRUE)) {
 				/* OK! */
 			} else {
 ignore_gesture:
