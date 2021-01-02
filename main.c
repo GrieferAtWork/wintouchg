@@ -40,13 +40,10 @@
 #include <time.h>
 #include <wchar.h>
 
-/* CONFIG: Disable the control panel. */
-#undef CONFIG_WITHOUT_CP
-#define CONFIG_WITHOUT_CP 1
-
-/* CONFIG: Disable the application switches. */
-#undef CONFIG_WITHOUT_AS
-#define CONFIG_WITHOUT_AS 1
+#if 0
+#define CONFIG_WITHOUT_CP 1 /* CONFIG: Disable the control panel. */
+#define CONFIG_WITHOUT_AS 1 /* CONFIG: Disable the application switches. */
+#endif
 
 #ifdef __cplusplus
 extern "C" {
