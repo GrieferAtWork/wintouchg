@@ -1,0 +1,134 @@
+AccessModifierOffset: -4
+AlignAfterOpenBracket: Align
+AlignConsecutiveAssignments: true
+# AlignConsecutiveBitFields: true
+AlignConsecutiveDeclarations: false
+AlignConsecutiveMacros: true
+AlignEscapedNewlines: Left
+AlignOperands: true
+AlignTrailingComments: true
+AllowAllArgumentsOnNextLine: false
+AllowAllConstructorInitializersOnNextLine: false
+AllowAllParametersOfDeclarationOnNextLine: false
+AllowShortBlocksOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: true
+# AllowShortEnumsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLambdasOnASingleLine: All
+AllowShortLoopsOnASingleLine: false
+AlwaysBreakAfterReturnType: None
+AlwaysBreakBeforeMultilineStrings: false
+AlwaysBreakTemplateDeclarations: No
+BinPackArguments: true
+BinPackParameters: true
+ExperimentalAutoDetectBinPacking: true
+BraceWrapping:
+  AfterCaseLabel: false
+  AfterClass: false
+  AfterControlStatement: false
+  AfterEnum: false
+  AfterFunction: false
+  AfterNamespace: false
+  AfterObjCDeclaration: false
+  AfterStruct: false
+  AfterUnion: false
+  AfterExternBlock: false
+  BeforeCatch: false
+  BeforeElse: false
+  # BeforeLambdaBody: false
+  # BeforeWhile: false
+  IndentBraces: false
+  SplitEmptyFunction: false
+  SplitEmptyRecord: false
+  SplitEmptyNamespace: false
+BreakAfterJavaFieldAnnotations: true
+BreakBeforeBinaryOperators: None
+BreakBeforeBraces: Custom
+BreakBeforeTernaryOperators: true
+BreakConstructorInitializers: BeforeComma
+BreakInheritanceList: BeforeComma
+BreakStringLiterals: false
+ColumnLimit: 0
+CommentPragmas: '^\[\[\['
+CompactNamespaces: false
+ConstructorInitializerAllOnOneLineOrOnePerLine: false
+ConstructorInitializerIndentWidth: 4
+ContinuationIndentWidth: 0
+Cpp11BracedListStyle: false
+DeriveLineEnding: true
+DerivePointerAlignment: false
+DisableFormat: false
+ExperimentalAutoDetectBinPacking: false
+FixNamespaceComments: false
+ForEachMacros: ['LIST_FOREACH', 'SLIST_FOREACH', 'SLIST_P_FOREACH', 'STAILQ_FOREACH', 'STAILQ_P_FOREACH', 'SIMPLEQ_FOREACH', 'SIMPLEQ_P_FOREACH', 'TAILQ_FOREACH', 'TAILQ_FOREACH_REVERSE', 'CIRCLEQ_FOREACH', 'CIRCLEQ_FOREACH_REVERSE', 'DLIST_FOREACH']
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex:           '\"api.h\"'
+    Priority:        1
+  - Regex:           '<(.*/compiler|__stdinc|__stdcxx|__crt|features)[.]h>'
+    Priority:        2
+  - Regex:           '<(kernel|debugger|dev|drivers|fs|misc|sched)/.*>'
+    Priority:        3
+  - Regex:           '<hybrid/.*[.]h>'
+    Priority:        4
+  - Regex:           '<lib.*>'
+    Priority:        7
+  - Regex:           '<.*/.*>'
+    Priority:        5
+  - Regex:           '<.*>'
+    Priority:        6
+  - Regex:           '\".*\"'
+    Priority:        9
+  - Regex:           '.*'
+    Priority:        8
+IncludeIsMainRegex: '$'
+IndentCaseLabels: false
+IndentGotoLabels: false
+IndentPPDirectives: None
+IndentWidth: 4
+IndentWrappedFunctionNames: false
+JavaScriptQuotes: Leave
+JavaScriptWrapImports: true
+KeepEmptyLinesAtTheStartOfBlocks: true
+MaxEmptyLinesToKeep: 8
+NamespaceIndentation: None
+ObjCBinPackProtocolList: Auto
+ObjCBlockIndentWidth: 1
+ObjCSpaceAfterProperty: false
+ObjCSpaceBeforeProtocolList: false
+PenaltyBreakAssignment: 1
+PenaltyBreakBeforeFirstCallParameter: 1
+PenaltyBreakComment: 1
+PenaltyBreakFirstLessLess: 1
+PenaltyBreakString: 0
+PenaltyBreakTemplateDeclaration: 1
+PenaltyExcessCharacter: 1
+PenaltyReturnTypeOnItsOwnLine: 1
+PointerAlignment: Right
+ReflowComments: true
+SortIncludes: true
+SortUsingDeclarations: true
+SpaceAfterCStyleCast: false
+SpaceAfterLogicalNot: false
+SpaceAfterTemplateKeyword: false
+SpaceBeforeAssignmentOperators: true
+SpaceBeforeCpp11BracedList: true
+SpaceBeforeCtorInitializerColon: false
+SpaceBeforeInheritanceColon: false
+SpaceBeforeParens: ControlStatements
+SpaceBeforeRangeBasedForLoopColon: false
+SpaceInEmptyBlock: true
+SpaceInEmptyParentheses: false
+SpacesBeforeTrailingComments: 1
+SpacesInAngles: false
+SpacesInCStyleCastParentheses: false
+SpacesInConditionalStatement: false
+SpacesInContainerLiterals: false
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+Standard: Cpp03
+TabWidth: 4
+TypenameMacros: ['ATREE_HEAD', 'ATREE_NODE', 'ATREE_NODE_SINGLE', 'ATREE_XNODE', 'ATREE_SEMI_T', 'LLIST', 'LLIST_NODE']
+UseCRLF: false
+UseTab: ForIndentation
