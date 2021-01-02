@@ -869,26 +869,44 @@ err_cb:
 	return hr;
 }
 
-static IVectorView *SysIntern_GetRadioList(void) {
+static IVectorView *SysIntern_GetRadioList(bool requestAccess) {
 	IVectorView *result = NULL;
 	IRadioStatics *iRst;
-	IAsyncOperation *iAsyncList = NULL;
+	IAsyncOperation *iAsync = NULL;
 	HRESULT hr;
 	iRst = SysIntern_GetRadioStaticsActivationFactory();
 	if (!iRst)
 		goto done;
-//TODO:	hr = object->lpVtbl->RequestAccessAsync(object, (void **)&list);
-	hr = iRst->lpVtbl->GetRadiosAsync(iRst, (void **)&iAsyncList);
+	if (requestAccess) {
+		hr = iRst->lpVtbl->RequestAccessAsync(iRst, (void **)&iAsync);
+		if (FAILED(hr) || !iAsync) {
+			LOGERROR_PTR("IRadioStatics::RequestAccessAsync()", hr);
+		} else {
+			RADIOACCESSSTATUS acc;
+			SysIntern_WaitForIAsyncOperation(iAsync, &IID_AsyncOperationCompletedHandler_RadioAccessStatus);
+			acc = RADIOACCESSSTATUS_UNSPECIFIED;
+			/* Check operation status and log an error if it failed. */
+			hr = iAsync->lpVtbl->GetResults(iAsync, (void **)&acc);
+			if (FAILED(hr)) {
+				LOGERROR_PTR("IRadioStatics::RequestAccessAsync()::GetResults()", hr);
+			} else if (acc != RADIOACCESSSTATUS_ALLOWED) {
+				LOGERROR("IRadioStatics::RequestAccessAsync() returned access error %u\n", acc);
+			}
+	 		iAsync->lpVtbl->Release(iAsync);
+		}
+		iAsync = NULL;
+	}
+	hr = iRst->lpVtbl->GetRadiosAsync(iRst, (void **)&iAsync);
 	iRst->lpVtbl->Release(iRst);;
-	if (FAILED(hr) || !iAsyncList) {
+	if (FAILED(hr) || !iAsync) {
 		LOGERROR_PTR("IRadioStatics::GetRadiosAsync()", hr);
 		goto done;
 	}
-	hr = SysIntern_WaitForIAsyncOperation(iAsyncList, &IID_AsyncOperationCompletedHandler_IVectorView_Radio);
+	hr = SysIntern_WaitForIAsyncOperation(iAsync, &IID_AsyncOperationCompletedHandler_IVectorView_Radio);
 	if (FAILED(hr))
 		goto done;
-	hr = iAsyncList->lpVtbl->GetResults(iAsyncList, (void **)&result);
-	iAsyncList->lpVtbl->Release(iAsyncList);
+	hr = iAsync->lpVtbl->GetResults(iAsync, (void **)&result);
+	iAsync->lpVtbl->Release(iAsync);
 	if (FAILED(hr) || !result) {
 		LOGERROR_PTR("IAsyncOperation::GetResults()", hr);
 		result = NULL;
@@ -905,7 +923,7 @@ static RADIOSTATE SysIntern_GetRadioState(RADIOKIND rkKind) {
 	RADIOSTATE result = RADIOSTATE_UNKNOWN;
 	if (!SysIntern_LoadMsWinCoreWinRtAPIS())
 		goto done;
-	rdList = SysIntern_GetRadioList();
+	rdList = SysIntern_GetRadioList(false);
 	if (!rdList)
 		goto done;
 	hr = rdList->lpVtbl->get_Size(rdList, &dwSize);
@@ -950,7 +968,7 @@ static void SysIntern_SetRadioState(RADIOKIND rkKind, RADIOSTATE rsState) {
 	HRESULT hr;
 	if (!SysIntern_LoadMsWinCoreWinRtAPIS())
 		goto done;
-	rdList = SysIntern_GetRadioList();
+	rdList = SysIntern_GetRadioList(true);
 	if (!rdList)
 		goto done;
 	hr = rdList->lpVtbl->get_Size(rdList, &dwSize);
@@ -1732,8 +1750,8 @@ WtgGestureAnimation_Init(WtgGestureAnimation *__restrict self,
 	/* Construct the gesture overlay window. */
 	self->ga_overpos.x = mi.rcWork.left;
 	self->ga_overpos.y = mi.rcWork.top;
-	self->ga_oversiz.x = mi.rcWork.right - mi.rcWork.left;
-	self->ga_oversiz.y = mi.rcWork.bottom - mi.rcMonitor.top;
+	self->ga_oversiz.x = RC_WIDTH(mi.rcWork);
+	self->ga_oversiz.y = RC_HEIGHT(mi.rcWork);
 	self->ga_overlay   = WtgGestureAnimation_CreateOverlayWindow(self);
 	if (!self->ga_overlay)
 		goto err;
@@ -1877,12 +1895,12 @@ static void WtgAppSwitcherApplet_Fini(WtgAppSwitcherApplet *__restrict self) {
 #define CP_ELEM_VOLUME         1 /* Volume slider */
 #define CP_ELEM_CLK_BATTERY    2 /* Battery & Clock information */
 #define CP_ELEM_BUTTONS_FIRST  CP_ELEM_TGL_WIFI /* First button */
-#define CP_ELEM_TGL_WIFI       3 /* TODO: Toggle wifi */
-#define CP_ELEM_TGL_BLUETOOTH  4 /* TODO: Toggle bluetooth */
-#define CP_ELEM_TGL_ROTLOCK    5 /* TODO: Toggle rotation lock */
-#define CP_ELEM_TGL_FLIGHTMODE 6 /* TODO: Toggle flight mode */
-#define CP_ELEM_TGL_NIGHTMODE  7 /* TODO: Toggle night mode */
-#define CP_ELEM_TGL_PWRSAVE    8 /* TODO: Toggle powersaving mode */
+#define CP_ELEM_TGL_WIFI       3 /* Toggle wifi */
+#define CP_ELEM_TGL_BLUETOOTH  4 /* Toggle bluetooth */
+#define CP_ELEM_TGL_ROTLOCK    5 /* Toggle rotation lock */
+#define CP_ELEM_TGL_FLIGHTMODE 6 /* Toggle flight mode */
+#define CP_ELEM_TGL_NIGHTMODE  7 /* Toggle night mode */
+#define CP_ELEM_TGL_PWRSAVE    8 /* Toggle powersaving mode */
 #define CP_ELEM_BUTTON_USER_LO 9                                /* User-defined buttons */
 #define CP_ELEM_BUTTON_USER_HI (CP_ELEM_BUTTONS_FIRST + 14 - 1) /* *ditto* */
 #define CP_ELEM_BUTTONS_LAST   CP_ELEM_BUTTON_USER_HI           /* Last button */
@@ -2105,8 +2123,8 @@ static void Wtg_PerPixelBlend(void *dst, void const *src,
 
 static bool WtgControlPanel_IsSliderVertical(unsigned int elem) {
 	LONG w, h;
-	w = cp.cp_elems[elem].right - cp.cp_elems[elem].left;
-	h = cp.cp_elems[elem].bottom - cp.cp_elems[elem].top;
+	w = RC_WIDTH(cp.cp_elems[elem]);
+	h = RC_HEIGHT(cp.cp_elems[elem]);
 	return h > w;
 }
 
@@ -2114,10 +2132,10 @@ static double
 WtgControlPanel_GetSliderPositionAt(unsigned int elem, LONG x, LONG y) {
 	double result;
 	if (WtgControlPanel_IsSliderVertical(elem)) {
-		LONG h = cp.cp_elems[elem].bottom - cp.cp_elems[elem].top;;
+		LONG h = RC_HEIGHT(cp.cp_elems[elem]);
 		result = (double)(h - y) / (double)h;
 	} else {
-		result = (double)x / (double)(cp.cp_elems[elem].right - cp.cp_elems[elem].left);
+		result = (double)x / (double)RC_WIDTH(cp.cp_elems[elem]);
 	}
 	return result;
 }
@@ -2205,27 +2223,26 @@ WtgControlPanel_DrawElement(HDC hdc, UINT32 *base, unsigned int elem,
 	}	break;
 
 	case CP_ELEM_CLK_BATTERY: {
+		LONG w, h;
 		RECT clkRc = cp.cp_elems[elem];
 		POINT clkCenter;
 		GetLocalTime(&cp.cp_now);
-		{
-			LONG w, h;
-			w = clkRc.right - clkRc.left;
-			h = clkRc.bottom - clkRc.top;
-			if (w < h) {
-				clkRc.bottom = clkRc.top + w;
-			} else {
-				clkRc.right = clkRc.left + h;
-			}
+		w = RC_WIDTH(clkRc);
+		h = RC_HEIGHT(clkRc);
+		if (w < h) {
+			clkRc.bottom = clkRc.top + w;
+			h = w;
+		} else {
+			clkRc.right = clkRc.left + h;
+			w = h;
 		}
-		clkCenter.x = clkRc.left + (clkRc.right - clkRc.left) / 2;
-		clkCenter.y = clkRc.top + (clkRc.bottom - clkRc.top) / 2;
+		clkCenter.x = clkRc.left + w / 2;
+		clkCenter.y = clkRc.top + h / 2;
 		Ellipse(hdc, clkRc.left, clkRc.top, clkRc.right, clkRc.bottom);
 		{
 			char nowbuf[64];
 			int len;
-			LONG halfHeight;
-			halfHeight = (clkRc.bottom - clkRc.top) / 2;
+			LONG halfHeight = h / 2;
 
 			len = sprintf(nowbuf, "%.2u:%.2u:%.2u", cp.cp_now.wHour, cp.cp_now.wMinute, cp.cp_now.wSecond);
 			clkRc.bottom -= halfHeight;
@@ -2328,11 +2345,9 @@ static void WtgControlPanel_Draw(HDC hdc, UINT32 *image) {
 			else if (WtgControlPanelApplet_IsHover(&cp, i)) {
 				mode = WTG_CONTROL_PANEL_ELEM_MODE_HOVER;
 			}
-			WtgControlPanel_DrawElement(hdc, image +
-			                         cp.cp_elems[i].left + (cp.cp_elems[i].top * w), i,
-			                         cp.cp_elems[i].right - cp.cp_elems[i].left,
-			                         cp.cp_elems[i].bottom - cp.cp_elems[i].top,
-			                         w, mode);
+			WtgControlPanel_DrawElement(hdc, image + cp.cp_elems[i].left + (cp.cp_elems[i].top * w),
+			                            i, RC_WIDTH(cp.cp_elems[i]), RC_HEIGHT(cp.cp_elems[i]),
+			                            w, mode);
 		}
 	}
 }
@@ -2389,7 +2404,7 @@ void WtgControlPanel_Redraw(void) {
 		UINT32 *scanline;
 		scanline = (UINT32 *)dibBackgroundBits + (cp.cp_client.top * cp.cp_size.x);
 		scanline += cp.cp_client.left;
-		w = cp.cp_client.right - cp.cp_client.left;
+		w = RC_WIDTH(cp.cp_client);
 		for (y = cp.cp_client.top; y < cp.cp_client.bottom; ++y) {
 			for (x = 0; x < w; ++x)
 				scanline[x] |= 0xff000000;
@@ -2662,10 +2677,10 @@ static void WtgControlPanel_PlaceElements(void) {
 
 	lQuarter.top    = cp.cp_client.top;
 	lQuarter.left   = cp.cp_client.left;
-	lQuarter.right  = cp.cp_client.left + ((cp.cp_client.right - cp.cp_client.left) / 4);
+	lQuarter.right  = cp.cp_client.left + (RC_WIDTH(cp.cp_client) / 4);
 	lQuarter.bottom = cp.cp_client.bottom;
 	rQuarter.top    = cp.cp_client.top;
-	rQuarter.left   = cp.cp_client.right - ((cp.cp_client.right - cp.cp_client.left) / 4);
+	rQuarter.left   = cp.cp_client.right - (RC_WIDTH(cp.cp_client) / 4);
 	rQuarter.right  = cp.cp_client.right;
 	rQuarter.bottom = cp.cp_client.bottom;
 	mHalf.top       = cp.cp_client.top;
@@ -2693,13 +2708,13 @@ static void WtgControlPanel_PlaceElements(void) {
 	}
 	cp.cp_elems[CP_ELEM_CLK_BATTERY] = lQuarter;
 
-	buttonCols = (mHalf.right - mHalf.left) / CP_BUTTON_WIDTH;
-	buttonRows = (mHalf.bottom - mHalf.top) / CP_BUTTON_HEIGHT;
+	buttonCols = RC_WIDTH(mHalf) / CP_BUTTON_WIDTH;
+	buttonRows = RC_HEIGHT(mHalf) / CP_BUTTON_HEIGHT;
 
 	if (buttonCols <= 0 || buttonRows <= 0)
 		return; /* Cannot place any buttons... :( */
-	button_w = (double)(mHalf.right - mHalf.left) / (double)buttonCols;
-	button_h = (double)(mHalf.bottom - mHalf.top) / (double)buttonRows;
+	button_w = (double)RC_WIDTH(mHalf) / (double)buttonCols;
+	button_h = (double)RC_HEIGHT(mHalf) / (double)buttonRows;
 	for (i = CP_ELEM_BUTTONS_FIRST; i <= CP_ELEM_BUTTONS_LAST; ++i) {
 		LONG grid_x, grid_y;
 		LONG button_center_x, button_center_y;
@@ -3235,15 +3250,15 @@ do_update_gesture:
 			if (ga.ga_kind == WTG_GESTURE_KIND_ZOOM_RSTOR) {
 				/* Zoom out towards restore */
 				dst        = src;
-				src.left   = dst.left + (dst.right - dst.left) / 2;
-				src.top    = dst.top + (dst.bottom - dst.top) / 2;
+				src.left   = dst.left + RC_WIDTH(dst) / 2;
+				src.top    = dst.top + RC_HEIGHT(dst) / 2;
 				src.right  = src.left;
 				src.bottom = src.top;
 			} else if (ga.ga_anim.wa_animkind == WTG_WINDOW_KIND_NORMAL) {
 				if (distance < 0) {
 					/* Zoom out towards minimize */
-					dst.left   = src.left + (src.right - src.left) / 2;
-					dst.top    = src.top + (src.bottom - src.top) / 2;
+					dst.left   = src.left + RC_WIDTH(src) / 2;
+					dst.top    = src.top + RC_HEIGHT(src) / 2;
 					dst.right  = dst.left;
 					dst.bottom = dst.top;
 					distance   = -distance;
@@ -3280,9 +3295,9 @@ do_update_gesture:
 				else {
 set_fallback_dst_position:
 					dst.left = src.left;
-					dst.left += (src.right - src.left) / 2;
+					dst.left += RC_WIDTH(src) / 2;
 					dst.top = src.top;
-					dst.top += (src.bottom - src.top) / 2;
+					dst.top += RC_HEIGHT(src) / 2;
 					dst.right  = dst.left;
 					dst.bottom = dst.top;
 				}
@@ -3403,17 +3418,15 @@ set_illegal_zoom_blur:
 					}
 					tnProperties.rcDestination.left += (LONG)dist;
 					tnProperties.rcDestination.right += (LONG)dist;
-					total = (tnProperties.rcDestination.right -
-					         tnProperties.rcDestination.left);
-					lo = tnProperties.rcDestination.left;
-					hi = tnProperties.rcDestination.right;
+					total = RC_WIDTH(tnProperties.rcDestination);
+					lo    = tnProperties.rcDestination.left;
+					hi    = tnProperties.rcDestination.right;
 				} else {
 					tnProperties.rcDestination.top += (LONG)ga.ga_dist;
 					tnProperties.rcDestination.bottom += (LONG)ga.ga_dist;
-					total = (tnProperties.rcDestination.bottom -
-					         tnProperties.rcDestination.top);
-					lo = tnProperties.rcDestination.top;
-					hi = tnProperties.rcDestination.bottom;
+					total = RC_HEIGHT(tnProperties.rcDestination);
+					lo    = tnProperties.rcDestination.top;
+					hi    = tnProperties.rcDestination.bottom;
 				}
 				tnProperties.dwFlags |= DWM_TNP_OPACITY;
 				tnProperties.opacity = (BYTE)(255 * Wtg_CalculateVisibilityOpacity(total, lo, hi));
@@ -3586,8 +3599,8 @@ static bool WtgGesture_Finish(void) {
 						}
 						SetWindowPos(ga.ga_anim.wa_animwin,
 						             HWND_TOP, rc.left, rc.top,
-						             rc.right - rc.left,
-						             rc.bottom - rc.top,
+						             RC_WIDTH(rc),
+						             RC_HEIGHT(rc),
 						             SWP_SHOWWINDOW);
 						goto success;
 					}
