@@ -487,22 +487,34 @@ static void Sys_SetBrightness(double value) {
 }
 
 
-#define DEFINE_UUID(name, a, b, c, d, e)          \
-	static GUID const name = {                    \
-		0x##a##u, 0x##b##u, 0x##c##u,             \
-		{ (0x##d##u & 0xff00u) >> 8,              \
-		  (0x##d##u & 0xffu),                     \
-		  (0x##e##ull & 0xff0000000000ull) >> 40, \
-		  (0x##e##ull & 0xff00000000ull) >> 32,   \
-		  (0x##e##ull & 0xff000000ull) >> 24,     \
-		  (0x##e##ull & 0xff0000ull) >> 16,       \
-		  (0x##e##ull & 0xff00ull) >> 8,          \
-		  (0x##e##ull & 0xffull) }                \
+#undef _INIT_GUID
+#define _INIT_GUID(a, b, c, d, e)                   \
+	{                                               \
+		0x##a##u, 0x##b##u, 0x##c##u,               \
+		{                                           \
+			(0x##d##u & 0xff00u) >> 8,              \
+			(0x##d##u & 0xffu),                     \
+			(0x##e##ull & 0xff0000000000ull) >> 40, \
+			(0x##e##ull & 0xff00000000ull) >> 32,   \
+			(0x##e##ull & 0xff000000ull) >> 24,     \
+			(0x##e##ull & 0xff0000ull) >> 16,       \
+			(0x##e##ull & 0xff00ull) >> 8,          \
+			(0x##e##ull & 0xffull)                  \
+		}                                           \
 	}
+#undef DEFINE_GUID
+#define DEFINE_GUID(name, data) \
+	static GUID const name = _INIT_GUID data
+#undef CLSID_MMDeviceEnumerator
+#undef IID_IMMDeviceEnumerator
+#undef IID_IAudioEndpointVolume
+#define CLSID_MMDeviceEnumerator real_CLSID_MMDeviceEnumerator
+#define IID_IMMDeviceEnumerator  real_IID_IMMDeviceEnumerator
+#define IID_IAudioEndpointVolume real_IID_IAudioEndpointVolume
 
-DEFINE_UUID(UUID_MMDeviceEnumerator, BCDE0395, E52F, 467C, 8E3D, C4579291692E);
-DEFINE_UUID(UUID_IMMDeviceEnumerator, A95664D2, 9614, 4F35, A746, DE8DB63617E6);
-DEFINE_UUID(UUID_IAudioEndpointVolume, 5CDF2C82, 841E, 4546, 9722, 0CF74078229A);
+DEFINE_GUID(CLSID_MMDeviceEnumerator, (BCDE0395,E52F,467C,8E3D,C4579291692E));
+DEFINE_GUID(IID_IMMDeviceEnumerator,  (A95664D2,9614,4F35,A746,DE8DB63617E6));
+DEFINE_GUID(IID_IAudioEndpointVolume, (5CDF2C82,841E,4546,9722,0CF74078229A));
 
 static IAudioEndpointVolume *SysIntern_VolumeControllerAcquire(void) {
 	HRESULT hr;
@@ -525,10 +537,10 @@ static IAudioEndpointVolume *SysIntern_VolumeControllerAcquire(void) {
 		LOGERROR_PTR("CoInitialize()", hr);
 		goto err;
 	}
-	hr = CoCreateInstance(&UUID_MMDeviceEnumerator, NULL, CLSCTX_INPROC_SERVER,
-	                      &UUID_IMMDeviceEnumerator, (LPVOID *)&deviceEnumerator);
+	hr = CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_INPROC_SERVER,
+	                      &IID_IMMDeviceEnumerator, (LPVOID *)&deviceEnumerator);
 	if (FAILED(hr) || !deviceEnumerator) {
-		LOGERROR_PTR("CoCreateInstance(UUID_MMDeviceEnumerator, UUID_IMMDeviceEnumerator)", hr);
+		LOGERROR_PTR("CoCreateInstance(CLSID_MMDeviceEnumerator, IID_IMMDeviceEnumerator)", hr);
 		goto err2;
 	}
 	hr = deviceEnumerator->lpVtbl->GetDefaultAudioEndpoint(deviceEnumerator, eRender,
@@ -540,9 +552,9 @@ static IAudioEndpointVolume *SysIntern_VolumeControllerAcquire(void) {
 	}
 	hr = defaultDevice->lpVtbl->Activate(defaultDevice,
 #ifdef __cplusplus
-	                                     UUID_IAudioEndpointVolume,
+	                                     IID_IAudioEndpointVolume,
 #else /* __cplusplus */
-	                                     &UUID_IAudioEndpointVolume,
+	                                     &IID_IAudioEndpointVolume,
 #endif /* !__cplusplus */
 	                                     CLSCTX_INPROC_SERVER, NULL,
 	                                     (LPVOID *)&endpointVolume);
@@ -604,6 +616,179 @@ static void Sys_SetVolume(float value) {
 }
 
 
+static int last_system_airplane  = -1;
+static int last_system_bluetooth = -1;
+static int last_system_wifi      = -1;
+
+
+/* Airplane mode */
+DEFINE_GUID(CLSID_RadioManagementAPI, (581333f6,28db,41be,bc7a,ff201f12f3f6));
+DEFINE_GUID(CID_IRadioManager,        (db3afbfb,08e6,46c6,aa70,bf9a34c30ab7));
+
+typedef IUnknown IUIRadioInstanceCollection; /* Didn't bother rev-engineering this one... */
+typedef DWORD _RADIO_CHANGE_REASON;
+
+/* Undocumented interface exported from "RMApi.dll" (running as "RMsvc")
+ * Found by reverse engineering the interface using IDA and ghidra.
+ *
+ * NOTE: Now that I know the answer, I was also able to find the question:
+ * https://social.msdn.microsoft.com/Forums/en-US/e790991c-d093-49b0-a0cc-d30755d45ce0/about-the-way-to-turn-onoff-the-airplane-on-windows8
+ * Apparently, Microsoft doesn't ~want you to use this API~, even though it's
+ * the very API that their Settings app is using. And even more interestingly,
+ * despite the following (quote):
+ * """
+ * The interfaces you found are not published nor supported for application use,
+ * and there is no guarantee that the final shipping version of Windows 8 or future
+ * versions of Windows will have these interfaces. You must not use them. We do not
+ * have a public API that changes wireless radios directly.
+ * """
+ * It has been close to 8 years since then, and the latest, stable version of
+ * windows 10 still has that very same API (and I doubt that's going to change
+ * anytime soon).
+ *
+ * I'm really interested in whether or not this API can be used directly from
+ * inside of a uwp application (this is a COM interface after all, just like
+ * all of the stuff from the public (winrt) API). Only that this one seems to
+ * bypass all of those pretty little Privacy settings switches from your settings
+ * app. - Because after all: Why should Microsoft's private, internal APIs have
+ * to go through all of the troubles of asking the user for permission, when one
+ * can just bypass everything and talk to the relevant service directly ¯\_(ツ)_/¯
+ * Because if it can be accessed directly from uwp, then mere knowledge about this
+ * API means that the toggle under SystemSettings/Privacy/RF is literally just
+ * for show... */
+#undef INTERFACE
+#define INTERFACE IRadioManager
+DECLARE_INTERFACE(IRadioManager) {
+
+	/* IUnknown */
+	STDMETHOD(QueryInterface)(THIS_ GUID const *riid, LPVOID *ppvObj);
+	STDMETHOD_(ULONG, AddRef)(THIS);
+	STDMETHOD_(ULONG, Release)(THIS);
+
+	/* IRadioManager (aka. `CUIRadioManager') */
+
+	/* Unconditionally writes `1' to `pdwState' (literally; that's all the assembly for
+	 * this function ever does (on my machine)). But this function is called by the system
+	 * settings app, and if it were to return `0', I'm guessing the flight-mode toggle
+	 * would disappear or be greyed out in system settings... */
+	STDMETHOD(IsRMSupported)(THIS_ DWORD *pdwState);
+
+	/* ??? */
+	STDMETHOD(GetUIRadioInstances)(THIS_ IUIRadioInstanceCollection **param_1);
+
+	/* These are what you came here for: The getter/setting for the flight-mode switch!
+	 * NOTE: param_2 and param_3 I don't really understand, but they must be non-NULL,
+	 *       and the current flight-mode-disabled state is written to `pbEnabled' */
+	STDMETHOD(GetSystemRadioState)(THIS_ int *pbEnabled, int *param_2, _RADIO_CHANGE_REASON *param_3);
+	STDMETHOD(SetSystemRadioState)(THIS_ int bEnabled);
+
+	/* Calls the internal function `_NotifySysRadioChanged()'. Not really sure when this one
+	 * would have to be called. But this one might be related to `OnHardwareSliderChange()'?
+	 * NOTE: `_NotifySysRadioChanged()' already gets called internally by `SetSystemRadioState()',
+	 *       so there is no need to call this manually! */
+	STDMETHOD(Refresh)(THIS);
+
+	/* From what I can guess, this function is called by the HID driver when an
+	 * actual hardware slider (for the purpose of toggling flight-mode) is changed.
+	 * The 2 arguments seem to control exactly how the switch was altered... */
+	STDMETHOD(OnHardwareSliderChange)(THIS_ int param_1, int param_2);
+};
+
+static IRadioManager *SysIntern_AcquireRadioManager(void) {
+	IRadioManager *irm = NULL;
+	HRESULT hr;
+	if (!pdyn_CoInitialize || !pdyn_CoCreateInstance) {
+		if (!DynApi_InitializeOld32()) {
+			LOGERROR_GLE("DynApi_InitializeOld32()");
+			goto done;
+		}
+	}
+	hr = CoInitialize(NULL);
+	if (FAILED(hr)) {
+		LOGERROR_PTR("CoInitialize()", hr);
+		goto done;
+	}
+	hr = CoCreateInstance(&CLSID_RadioManagementAPI, NULL, CLSCTX_LOCAL_SERVER,
+	                      &CID_IRadioManager, (void **)&irm);
+	if (FAILED(hr) || !irm) {
+		LOGERROR_PTR("CoCreateInstance()", hr);
+		irm = NULL;
+		goto done;
+	}
+done:
+	return irm;
+}
+static void SysIntern_ReleaseRadioManager(IRadioManager *self) {
+	if (!self)
+		return;
+	self->lpVtbl->Release(self);
+	if (pdyn_CoUninitialize)
+		CoUninitialize();
+}
+
+static bool SysIntern_GetFlightModeEnabled(void) {
+	bool result = false;
+	IRadioManager *irm;
+	irm = SysIntern_AcquireRadioManager();
+	if (irm) {
+		int a, b;
+		HRESULT hr;
+		_RADIO_CHANGE_REASON c;
+		hr = irm->lpVtbl->GetSystemRadioState(irm, &a, &b, &c);
+		(void)b;
+		(void)c;
+		if (FAILED(hr)) {
+			LOGERROR_PTR("GetSystemRadioState()", hr);
+		} else {
+			result = a == 0;
+		}
+		SysIntern_ReleaseRadioManager(irm);
+	}
+	/* TODO: On error, the flight-mode-enabled state can be read from the registry:
+	 * HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Control\RadioManagement\SystemRadioState
+	 * Source: https://stackoverflow.com/questions/42273812/how-to-detect-airplane-mode-programmatically-in-laptop-with-windows-10-using-uwp */
+	return result;
+}
+
+static void SysIntern_SetFlightModeEnabled(bool enabled) {
+	IRadioManager *irm;
+	irm = SysIntern_AcquireRadioManager();
+	if (irm) {
+		HRESULT hr;
+		hr = irm->lpVtbl->SetSystemRadioState(irm, enabled ? 0 : 1);
+		if (FAILED(hr)) {
+			LOGERROR_PTR("SetSystemRadioState()", hr);
+		} else {
+			if (enabled) {
+				/* Disabling flight mode means that these become disabled! */
+				last_system_bluetooth = 0;
+				last_system_wifi      = 0;
+			} else {
+				/* Disabling flight mode means that these are once again undefined! */
+				last_system_bluetooth = -1;
+				last_system_wifi      = -1;
+			}
+		}
+		SysIntern_ReleaseRadioManager(irm);
+	}
+}
+
+static bool Sys_GetFlightModeEnabled(void) {
+	if (last_system_airplane < 0)
+		last_system_airplane = SysIntern_GetFlightModeEnabled();
+	return last_system_airplane != 0;
+}
+
+static void Sys_SetFlightModeEnabled(bool enabled) {
+	if (last_system_airplane == enabled)
+		return;
+	SysIntern_SetFlightModeEnabled(enabled);
+	last_system_airplane = enabled;
+}
+
+
+
+
 /* RADIO Access (Bluetooth / Wifi) */
 typedef DWORD RADIOACCESSSTATUS;
 #define RADIOACCESSSTATUS_UNSPECIFIED      0
@@ -648,11 +833,11 @@ typedef struct {
 	} Reserved;
 } HSTRING_HEADER;
 
-static GUID const IID_IUnknown                                         = { 0x00000000, 0x0000, 0x0000, { 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46 } };
-static GUID const IID_IAgileObject                                     = { 0x94ea2b94, 0xe9cc, 0x49e0, { 0xc0, 0xff, 0xee, 0x64, 0xca, 0x8f, 0x5b, 0x90 } };
-static GUID const IID_IRadioStatics                                    = { 0x5fb6a12e, 0x67cb, 0x46ae, { 0xaa, 0xe9, 0x65, 0x91, 0x9f, 0x86, 0xef, 0xf4 } };
-static GUID const IID_AsyncOperationCompletedHandler_IVectorView_Radio = { 0xd30691e6, 0x60a0, 0x59c9, { 0x89, 0x65, 0x5b, 0xbe, 0x28, 0x2e, 0x82, 0x08 } };
-static GUID const IID_AsyncOperationCompletedHandler_RadioAccessStatus = { 0xbd248e73, 0xf05f, 0x574c, { 0xae, 0x3d, 0x9b, 0x95, 0xc4, 0xbf, 0x28, 0x2a } };
+DEFINE_GUID(IID_IUnknown,                                         (00000000,0000,0000,c000,000000000046));
+DEFINE_GUID(IID_IAgileObject,                                     (94ea2b94,e9cc,49e0,c0ff,ee64ca8f5b90));
+DEFINE_GUID(IID_IRadioStatics,                                    (5fb6a12e,67cb,46ae,aae9,65919f86eff4));
+DEFINE_GUID(IID_AsyncOperationCompletedHandler_IVectorView_Radio, (d30691e6,60a0,59c9,8965,5bbe282e8208));
+DEFINE_GUID(IID_AsyncOperationCompletedHandler_RadioAccessStatus, (bd248e73,f05f,574c,ae3d,9b95c4bf282a));
 
 /* From "api-ms-win-core-winrt-string-l1-1-0.dll": */
 DEFINE_DYNAMIC_FUNCTION(HRESULT, STDAPICALLTYPE, WindowsCreateStringReference, (PCWSTR sourceString, UINT32 length, HSTRING_HEADER *hstringHeader, HSTRING *string));
@@ -1082,9 +1267,6 @@ done:
 	SysIntern_FreeMsWinCoreWinRtAPIS();
 }
 
-static int last_system_bluetooth = -1;
-static int last_system_wifi      = -1;
-
 /* High-level System radio getter/setter */
 static bool Sys_GetBluetoothEnabled(void) {
 	if (last_system_bluetooth < 0)
@@ -1093,6 +1275,8 @@ static bool Sys_GetBluetoothEnabled(void) {
 }
 static void Sys_SetBluetoothEnabled(bool enabled) {
 	if (last_system_bluetooth == enabled)
+		return;
+	if (Sys_GetFlightModeEnabled())
 		return;
 	SysIntern_SetRadioState(RADIOKIND_BLUETOOTH,
 	                        enabled ? RADIOSTATE_ON
@@ -1106,6 +1290,8 @@ static bool Sys_GetWifiEnabled(void) {
 }
 static void Sys_SetWifiEnabled(bool enabled) {
 	if (last_system_wifi == enabled)
+		return;
+	if (Sys_GetFlightModeEnabled())
 		return;
 	SysIntern_SetRadioState(RADIOKIND_WIFI,
 	                        enabled ? RADIOSTATE_ON
@@ -1257,10 +1443,6 @@ static unsigned int Sys_GetRunState(void) {
  *  - HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\Cache\DefaultAccount\$$windows.data.bluelightreduction.bluelightreductionstate\Current
  * Source: Own reverse engineering */
 
-/* TODO: CP_ELEM_TGL_FLIGHTMODE: Flight mode enable/disable
- * Can be read using: HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Control\RadioManagement\SystemRadioState
- * Source: https://stackoverflow.com/questions/42273812/how-to-detect-airplane-mode-programmatically-in-laptop-with-windows-10-using-uwp
- */
 /* TODO: CP_ELEM_TGL_PWRSAVE:    Powersaving mode enable/disable */
 /* TODO: Battery state/levels:   https://docs.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-system_battery_state */
 #endif /* !CONFIG_WITHOUT_CP */
@@ -2098,9 +2280,9 @@ static void WtgAppSwitcherApplet_Fini(WtgAppSwitcherApplet *__restrict self) {
 #define CP_ELEM_BUTTONS_FIRST   CP_ELEM_TGL_WIFI /* First button */
 #define CP_ELEM_TGL_WIFI        3 /* Toggle wifi */
 #define CP_ELEM_TGL_BLUETOOTH   4 /* Toggle bluetooth */
-#define CP_ELEM_TGL_ROTLOCK     5 /* Toggle rotation lock */
-#define CP_ELEM_TGL_RUNSTATE    6 /* Cycle run states */
-#define CP_ELEM_TGL_FLIGHTMODE  7 /* Toggle flight mode */
+#define CP_ELEM_TGL_FLIGHTMODE  5 /* Toggle flight mode */
+#define CP_ELEM_TGL_ROTLOCK     6 /* Toggle rotation lock */
+#define CP_ELEM_TGL_RUNSTATE    7 /* Cycle run states */
 #define CP_ELEM_TGL_NIGHTMODE   8 /* Toggle night mode */
 #define CP_ELEM_TGL_PWRSAVE     9 /* Toggle powersaving mode */
 #define CP_ELEM_BUTTON_USER_LO 10                               /* User-defined buttons */
@@ -2243,6 +2425,7 @@ extern uint8_t const gui_cp_rlck[64][64][4];
 extern uint8_t const gui_cp_standby[64][40][4];
 extern uint8_t const gui_cp_blkscrn[64][40][4];
 extern uint8_t const gui_cp_running[64][40][4];
+extern uint8_t const gui_cp_plane[63][52][4];
 #endif /* !CONFIG_WITHOUT_CP */
 #define GUI_RGBA(r, g, b, a) /* XXX: Byteorder??? */ \
 	((UINT32)(b) | ((UINT32)(g) << 8) | ((UINT32)(r) << 16) | ((UINT32)(a) << 24))
@@ -2469,10 +2652,16 @@ WtgControlPanel_DrawElement(HDC hdc, UINT32 *base, unsigned int elem,
 	}	break;
 
 	case CP_ELEM_TGL_WIFI: {
-		if (Sys_GetWifiEnabled()) {
+		DWORD bgColor = 0;
+		if (Sys_GetFlightModeEnabled()) {
+			bgColor = GUI_RGBA(0x26, 0x92, 0xad, 0xff);
+		} else if (Sys_GetWifiEnabled()) {
+			bgColor = GUI_RGBA(0x78, 0xdb, 0x61, 0xff);
+		}
+		if (bgColor) {
 			for (y = 1; y < h - 1; ++y) {
 				for (x = 1; x < w - 1; ++x) {
-					PIXEL(x, y) = GUI_RGBA(0x78, 0xdb, 0x61, 0xff);
+					PIXEL(x, y) = bgColor;
 				}
 			}
 		}
@@ -2489,10 +2678,16 @@ WtgControlPanel_DrawElement(HDC hdc, UINT32 *base, unsigned int elem,
 	}	break;
 
 	case CP_ELEM_TGL_BLUETOOTH: {
-		if (Sys_GetBluetoothEnabled()) {
+		DWORD bgColor = 0;
+		if (Sys_GetFlightModeEnabled()) {
+			bgColor = GUI_RGBA(0x26, 0x92, 0xad, 0xff);
+		} else if (Sys_GetBluetoothEnabled()) {
+			bgColor = GUI_RGBA(0x78, 0xdb, 0x61, 0xff);
+		}
+		if (bgColor) {
 			for (y = 1; y < h - 1; ++y) {
 				for (x = 1; x < w - 1; ++x) {
-					PIXEL(x, y) = GUI_RGBA(0x78, 0xdb, 0x61, 0xff);
+					PIXEL(x, y) = bgColor;
 				}
 			}
 		}
@@ -2505,6 +2700,26 @@ WtgControlPanel_DrawElement(HDC hdc, UINT32 *base, unsigned int elem,
 			                  GUI_WIDTH(gui_cp_bth),
 			                  GUI_HEIGHT(gui_cp_bth), stride,
 			                  GUI_WIDTH(gui_cp_bth));
+		}
+	}	break;
+
+	case CP_ELEM_TGL_FLIGHTMODE: {
+		if (Sys_GetFlightModeEnabled()) {
+			for (y = 1; y < h - 1; ++y) {
+				for (x = 1; x < w - 1; ++x) {
+					PIXEL(x, y) = GUI_RGBA(0x78, 0xdb, 0x61, 0xff);
+				}
+			}
+		}
+		if (w >= GUI_WIDTH(gui_cp_plane) &&
+		    h >= GUI_HEIGHT(gui_cp_plane)) {
+			LONG x, y;
+			x = (w - GUI_WIDTH(gui_cp_plane)) / 2;
+			y = (h - GUI_HEIGHT(gui_cp_plane)) / 2;
+			Wtg_PerPixelBlend(&PIXEL(x, y), gui_cp_plane,
+			                  GUI_WIDTH(gui_cp_plane),
+			                  GUI_HEIGHT(gui_cp_plane), stride,
+			                  GUI_WIDTH(gui_cp_plane));
 		}
 	}	break;
 
@@ -2766,11 +2981,14 @@ static bool WtgControlPanel_ClickElem(unsigned int elem) {
 		return true;
 	}	break;
 
+	case CP_ELEM_TGL_FLIGHTMODE:
+		Sys_SetFlightModeEnabled(!Sys_GetFlightModeEnabled());
+		return true;
+
 	default:
 		break;
 	}
 
-	// TODO: CP_ELEM_TGL_FLIGHTMODE
 	// TODO: CP_ELEM_TGL_NIGHTMODE
 	// TODO: CP_ELEM_TGL_PWRSAVE
 	return false;

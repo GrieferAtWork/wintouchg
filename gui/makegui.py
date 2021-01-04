@@ -61,6 +61,7 @@ AREAS = [('CONFIG_WITHOUT_CP', 'cp_l',       (0,   0,   32, 1)),
          ('CONFIG_WITHOUT_CP', 'cp_standby', (0,   100, 64, 40)),
          ('CONFIG_WITHOUT_CP', 'cp_blkscrn', (65,  100, 64, 40)),
          ('CONFIG_WITHOUT_CP', 'cp_running', (130, 100, 64, 40)),
+         ('CONFIG_WITHOUT_CP', 'cp_plane',   (0,   141, 63, 52)),
          ]
 print("#if 0")
 prevCond = None
